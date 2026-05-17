@@ -6,12 +6,14 @@ Usage:
 """
 import os
 import sys
+import json
 import argparse
 import numpy as np
 import tensorflow as tf
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
-    roc_auc_score, average_precision_score, confusion_matrix, classification_report
+    roc_auc_score, average_precision_score, confusion_matrix,
+    classification_report, precision_recall_curve, roc_curve
 )
 import matplotlib
 matplotlib.use("Agg")
@@ -22,6 +24,47 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from data.dataset_loader import FlowDatasetLoader
 from data.preprocessing import FlowPreprocessor
 from training.train_task import build_task_head, make_task_labels
+
+
+def find_optimal_threshold(labels, probs_positive, strategy="f1"):
+    """
+    Find the optimal decision threshold for the positive class.
+    
+    strategy:
+        - 'f1': maximize F1 score
+        - 'recall_90': find the highest threshold that achieves >= 0.90 recall
+    """
+    precision_arr, recall_arr, thresholds = precision_recall_curve(labels, probs_positive)
+    
+    if strategy == "f1":
+        # F1 = 2 * (P * R) / (P + R)
+        f1_scores = 2 * precision_arr * recall_arr / (precision_arr + recall_arr + 1e-8)
+        best_idx = np.argmax(f1_scores)
+        best_threshold = thresholds[best_idx] if best_idx < len(thresholds) else 0.5
+        return best_threshold, {
+            "threshold": float(best_threshold),
+            "precision": float(precision_arr[best_idx]),
+            "recall": float(recall_arr[best_idx]),
+            "f1": float(f1_scores[best_idx]),
+        }
+    elif strategy == "recall_90":
+        # Find highest threshold where recall >= 0.90
+        valid = recall_arr >= 0.90
+        if valid.any():
+            # Among valid, pick the one with highest precision (= highest threshold)
+            valid_indices = np.where(valid)[0]
+            best_idx = valid_indices[np.argmax(precision_arr[valid_indices])]
+            best_threshold = thresholds[best_idx] if best_idx < len(thresholds) else 0.5
+        else:
+            best_threshold = 0.3  # fallback: lower threshold to boost recall
+            best_idx = np.argmin(np.abs(thresholds - best_threshold)) if len(thresholds) > 0 else 0
+        return best_threshold, {
+            "threshold": float(best_threshold),
+            "precision": float(precision_arr[best_idx]),
+            "recall": float(recall_arr[best_idx]),
+        }
+    else:
+        raise ValueError(f"Unknown strategy: {strategy}")
 
 
 def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
@@ -37,21 +80,79 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
     rec = recall_score(labels, preds, average="weighted", zero_division=0)
     f1 = f1_score(labels, preds, average="weighted", zero_division=0)
 
+    # Per-class metrics
+    rec_per_class = recall_score(labels, preds, average=None, zero_division=0)
+    prec_per_class = precision_score(labels, preds, average=None, zero_division=0)
+    f1_per_class = f1_score(labels, preds, average=None, zero_division=0)
+
     print(f"\n{'='*60}")
-    print(f"  Evaluation — {task_name}")
+    print(f"  Evaluation — {task_name} (default threshold=0.5)")
     print(f"{'='*60}")
     print(f"  Accuracy : {acc:.4f}")
     print(f"  Precision: {prec:.4f}")
     print(f"  Recall   : {rec:.4f}")
     print(f"  F1       : {f1:.4f}")
 
-    # ROC-AUC (binary tasks)
+    metrics_dict = {
+        "accuracy": float(acc),
+        "precision_weighted": float(prec),
+        "recall_weighted": float(rec),
+        "f1_weighted": float(f1),
+        "recall_per_class": rec_per_class.tolist(),
+        "precision_per_class": prec_per_class.tolist(),
+        "f1_per_class": f1_per_class.tolist(),
+    }
+
+    # ROC-AUC (binary tasks) + optimal threshold
     if probs.shape[-1] == 2:
         try:
             roc = roc_auc_score(labels, probs[:, 1])
             pr_auc = average_precision_score(labels, probs[:, 1])
             print(f"  ROC-AUC  : {roc:.4f}")
             print(f"  PR-AUC   : {pr_auc:.4f}")
+            metrics_dict["roc_auc"] = float(roc)
+            metrics_dict["pr_auc"] = float(pr_auc)
+
+            # --- Optimal threshold search ---
+            opt_threshold, opt_info = find_optimal_threshold(labels, probs[:, 1], strategy="f1")
+            preds_opt = (probs[:, 1] >= opt_threshold).astype(int)
+            acc_opt = accuracy_score(labels, preds_opt)
+            rec_opt = recall_score(labels, preds_opt, average="weighted", zero_division=0)
+            f1_opt = f1_score(labels, preds_opt, average="weighted", zero_division=0)
+            rec_opt_pc = recall_score(labels, preds_opt, average=None, zero_division=0)
+            prec_opt_pc = precision_score(labels, preds_opt, average=None, zero_division=0)
+
+            print(f"\n  --- Optimal Threshold: {opt_threshold:.4f} ---")
+            print(f"  Accuracy : {acc_opt:.4f}")
+            print(f"  Recall   : {rec_opt:.4f}  (class-0: {rec_opt_pc[0]:.4f}, class-1: {rec_opt_pc[1]:.4f})")
+            print(f"  F1       : {f1_opt:.4f}")
+
+            metrics_dict["optimal_threshold"] = float(opt_threshold)
+            metrics_dict["optimal_accuracy"] = float(acc_opt)
+            metrics_dict["optimal_recall_weighted"] = float(rec_opt)
+            metrics_dict["optimal_f1_weighted"] = float(f1_opt)
+            metrics_dict["optimal_recall_per_class"] = rec_opt_pc.tolist()
+            metrics_dict["optimal_precision_per_class"] = prec_opt_pc.tolist()
+
+            # Save ROC curve data for visualization
+            fpr, tpr, roc_thresholds = roc_curve(labels, probs[:, 1])
+            prec_curve, rec_curve, pr_thresholds = precision_recall_curve(labels, probs[:, 1])
+            metrics_dict["roc_curve"] = {"fpr": fpr.tolist(), "tpr": tpr.tolist()}
+            metrics_dict["pr_curve"] = {"precision": prec_curve.tolist(), "recall": rec_curve.tolist()}
+
+            # Threshold sweep for visualization
+            sweep_thresholds = np.linspace(0.05, 0.95, 50)
+            sweep_f1, sweep_rec, sweep_prec = [], [], []
+            for t in sweep_thresholds:
+                p = (probs[:, 1] >= t).astype(int)
+                sweep_f1.append(float(f1_score(labels, p, average="weighted", zero_division=0)))
+                sweep_rec.append(float(recall_score(labels, p, average="weighted", zero_division=0)))
+                sweep_prec.append(float(precision_score(labels, p, average="weighted", zero_division=0)))
+            metrics_dict["threshold_sweep"] = {
+                "thresholds": sweep_thresholds.tolist(),
+                "f1": sweep_f1, "recall": sweep_rec, "precision": sweep_prec
+            }
+
         except ValueError:
             print("  ROC/PR-AUC: not computable (single-class in labels)")
 
@@ -60,6 +161,8 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
     # Confusion matrix
     cm = confusion_matrix(labels, preds)
     print(f"  Confusion Matrix:\n{cm}\n")
+
+    metrics_dict["confusion_matrix"] = cm.tolist()
 
     # Save confusion matrix plot
     os.makedirs("./logs/eval", exist_ok=True)
@@ -74,6 +177,12 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
     plt.savefig(f"./logs/eval/cm_{task_name}.png", dpi=150)
     plt.close()
     print(f"  Confusion matrix saved to ./logs/eval/cm_{task_name}.png")
+
+    # Save metrics as JSON for the visualization script
+    metrics_path = f"./logs/eval/metrics_{task_name}.json"
+    with open(metrics_path, "w") as f:
+        json.dump(metrics_dict, f, indent=2)
+    print(f"  Metrics saved to {metrics_path}")
 
     return {"accuracy": acc, "precision": prec, "recall": rec, "f1": f1}
 

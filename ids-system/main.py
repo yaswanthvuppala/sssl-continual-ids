@@ -52,12 +52,15 @@ def run_csv_pipeline(
         f'"{python}" training/evaluate.py --task {task} --test_csv "{test_csv}" '
         f'--label_col "{label_col}"'
     )
+    # Auto-generate visualization plots
+    run(f'"{python}" training/visualize_metrics.py --task {task}')
+
 
 
 def main():
     parser = argparse.ArgumentParser(description="SSSL-Based Continual IDS — Master CLI")
     parser.add_argument("--mode", type=str, required=True,
-                        choices=["ssl", "task", "evaluate", "predict", "benchmark", "pipeline", "unsw"],
+                        choices=["ssl", "task", "evaluate", "predict", "benchmark", "pipeline", "unsw", "visualize"],
                         help="Operating mode")
     parser.add_argument("--task", type=str, default=None, help="Task name (for --mode task/evaluate/pipeline)")
     parser.add_argument("--epochs", type=int, default=None, help="Override epoch count")
@@ -102,6 +105,10 @@ def main():
 
     elif args.mode == "benchmark":
         run(f'"{python}" training/benchmark.py')
+
+    elif args.mode == "visualize":
+        task = args.task or "intrusion"
+        run(f'"{python}" training/visualize_metrics.py --task {task}')
 
     elif args.mode == "pipeline":
         if not args.train_csv or not args.test_csv:

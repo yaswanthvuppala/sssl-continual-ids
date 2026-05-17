@@ -61,14 +61,23 @@ def main():
     parser.add_argument("--unlabeled_batch_size", type=int, default=128, help="Unlabeled batch size")
     parser.add_argument("--train_csv", type=str, default=None, help="Training CSV")
     parser.add_argument("--label_col", type=str, default="Label", help="Label column in the training CSV")
-    parser.add_argument("--preprocessor_path", type=str, default="./checkpoints/preprocessor.pkl",
-                        help="Path to the fitted preprocessor")
+    parser.add_argument("--preprocessor_path", type=str, default=None,
+                        help="Path to the fitted preprocessor (auto-selected per task if not set)")
     parser.add_argument("--max_labeled", type=int, default=None,
                         help="Optional cap on labeled training samples")
     args = parser.parse_args()
 
     print(f"Initializing Continual Learning for Task: {args.task}")
-    
+
+    # Resolve preprocessor path per task so label encoders never conflict.
+    # intrusion uses 'label' (binary 0/1); dos/port_scan use 'attack_cat' (strings).
+    if args.preprocessor_path is None:
+        if args.task == "intrusion":
+            args.preprocessor_path = "./checkpoints/preprocessor.pkl"
+        else:
+            args.preprocessor_path = f"./checkpoints/preprocessor_{args.task}.pkl"
+    print(f"Using preprocessor: {args.preprocessor_path}")
+
     # Load frozen encoder
     encoder = load_frozen_encoder()
     
@@ -89,7 +98,14 @@ def main():
         expected_input_dim = encoder.input_shape[-1]
         if os.path.exists(args.preprocessor_path):
             preprocessor = FlowPreprocessor.load(args.preprocessor_path)
-            X_l, y_l = preprocessor.transform(df_labeled, label_col=args.label_col)
+            try:
+                X_l, y_l = preprocessor.transform(df_labeled, label_col=args.label_col)
+            except (ValueError, KeyError) as e:
+                print(f"[WARN] Saved preprocessor incompatible with label column '{args.label_col}': {e}")
+                print("[WARN] Refitting preprocessor on current CSV...")
+                preprocessor = FlowPreprocessor()
+                X_l, y_l = preprocessor.fit_transform(df_labeled, label_col=args.label_col)
+                preprocessor.save(args.preprocessor_path)
             if X_l.shape[1] != expected_input_dim:
                 print(
                     f"[WARN] Saved preprocessor produces {X_l.shape[1]} features, "
@@ -121,12 +137,25 @@ def main():
         X_l = X_l[:args.max_labeled]
         y_l_binary = y_l_binary[:args.max_labeled]
     
+    # Compute class weights (inverse frequency) to address class imbalance
+    unique_classes, class_counts = np.unique(y_l_binary, return_counts=True)
+    n_samples = len(y_l_binary)
+    n_classes = len(unique_classes)
+    class_weights = {}
+    for cls_id, count in zip(unique_classes, class_counts):
+        class_weights[int(cls_id)] = n_samples / (n_classes * count)
+    print(f"Class distribution: {dict(zip(unique_classes.tolist(), class_counts.tolist()))}")
+    print(f"Class weights: {class_weights}")
+    
     # Create datasets
     labeled_ds = make_labeled_dataset(X_l, y_l_binary, batch_size=args.batch_size)
     unlabeled_ds = make_unlabeled_dataset(X_u, batch_size=args.unlabeled_batch_size, for_ssl=False)
     
-    # Train via FixMatch
-    trainer = FixMatchTrainer(encoder=encoder, head=head, gpm=gpm, lr=0.03)
+    # Train via FixMatch with focal loss and class weighting
+    trainer = FixMatchTrainer(
+        encoder=encoder, head=head, gpm=gpm, lr=0.03,
+        class_weights=class_weights, focal_gamma=2.0, confidence_threshold=0.90
+    )
     trainer.train(labeled_ds, unlabeled_ds, task_name=args.task, epochs=args.epochs)
     
     # After training, capture the gradients for this task to protect it in the future
