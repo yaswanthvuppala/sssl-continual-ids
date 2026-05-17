@@ -1,0 +1,65 @@
+# ==============================================================================
+# Git Ignore Configuration for SSSL-Based IDS Repository
+# ==============================================================================
+
+# --- Python Bytecode and Caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Virtual Environments ---
+.venv/
+venv/
+env/
+ENV/
+bin/
+lib/
+include/
+
+# --- Machine Learning Datasets & Large Data Files ---
+# Ignore the external dataset folder
+IDS-UNSW_NB/
+
+# Ignore large raw/processed data files specifically, but NOT the python scripts in ids-system/data/
+*.csv
+*.parquet
+*.xlsx
+*.zip
+*.tar.gz
+*.gz
+*.rar
+*.h5
+*.npy
+*.npz
+
+# --- Model Checkpoints & Serialized Weights ---
+# Ignore checkpoint directories in any part of the repository
+checkpoints/
+**/checkpoints/
+*.pt
+*.pth
+*.pkl
+*.joblib
+*.onnx
+*.pb
+
+# --- Logs & TensorBoard Visualizations ---
+logs/
+**/logs/
+runs/
+**/runs/
+*.log
+.tensorboard/
+
+# --- IDEs, Editors & OS Files ---
+.vscode/
+.idea/
+.project
+.settings/
+.DS_Store
+Thumbs.db
+desktop.ini

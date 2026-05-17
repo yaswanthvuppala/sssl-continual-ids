@@ -1,0 +1,19 @@
+# SSL Pretraining Configuration
+ssl:
+  mode: "simclr"                # "simclr" or "bert_flow"
+  input_dim: 80
+  hidden_dim: 512
+  embed_dim: 256
+  proj_dim: 128
+  temperature: 0.1
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  batch_size: 256
+  epochs: 50
+  num_workers: 4
+  checkpoint_dir: "./checkpoints/ssl"
+  log_dir: "./logs/ssl"
+
+data:
+  num_synthetic_samples: 50000
+  num_features: 80

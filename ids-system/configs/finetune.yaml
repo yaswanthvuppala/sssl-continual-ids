@@ -1,0 +1,32 @@
+# Task Fine-Tuning Configuration
+fixmatch:
+  confidence_threshold: 0.95
+  lambda_u: 1.0
+  learning_rate: 0.03
+  momentum: 0.9
+  nesterov: true
+  epochs: 20
+  labeled_batch_size: 32
+  unlabeled_batch_size: 128
+
+gpm:
+  energy_threshold: 0.97
+  memory_bank_dir: "./checkpoints/gpm"
+
+tasks:
+  dos:
+    target_class: 1
+    num_classes: 2
+    labeled_samples: 500
+  port_scan:
+    target_class: 2
+    num_classes: 2
+    labeled_samples: 500
+  exfiltration:
+    target_class: 3
+    num_classes: 2
+    labeled_samples: 300
+
+encoder:
+  frozen_path: "./checkpoints/encoder_frozen.keras"
+  embed_dim: 256

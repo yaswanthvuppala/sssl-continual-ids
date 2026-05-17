@@ -1,0 +1,18 @@
+# Inference Configuration
+inference:
+  attack_threshold: 0.80
+  anomaly_threshold: 0.65
+
+anomaly:
+  method: "autoencoder"         # "autoencoder" or "isolation_forest"
+  ae_path: "./checkpoints/anomaly_ae.keras"
+  if_path: "./checkpoints/isolation_forest.pkl"
+  calibration_percentile: 95.0
+
+encoder:
+  path: "./checkpoints/encoder_frozen.keras"
+
+heads:
+  dos_ddos: "./checkpoints/dos"
+  port_scan: "./checkpoints/port_scan"
+  exfiltration: "./checkpoints/exfiltration"
