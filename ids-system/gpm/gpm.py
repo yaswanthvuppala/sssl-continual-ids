@@ -48,28 +48,54 @@ class GradientProjectionMemory:
     def project_gradients(self, grads: List[tf.Tensor], variables: List[tf.Variable]) -> List[tf.Tensor]:
         """
         Project current gradients onto the null-space of stored bases.
+        Each basis was captured as a single flattened vector over ALL head parameters.
+        We therefore flatten, project, and reshape the entire gradient vector at once.
         """
         bases = self.memory_bank.get_all_bases()
         if not bases:
             return grads  # No past tasks, return original gradients
-            
+
+        # Flatten all per-layer gradients into one big vector (same layout as capture)
+        flat_parts = []
+        shapes = []
+        for g, v in zip(grads, variables):
+            if g is None:
+                flat_parts.append(None)
+                shapes.append(None)
+            else:
+                g_np = g.numpy().ravel()
+                flat_parts.append(g_np)
+                shapes.append((v.shape, len(g_np)))
+
+        valid = [p for p in flat_parts if p is not None]
+        if not valid:
+            return grads
+
+        g_flat = np.concatenate(valid)  # shape: (total_params,)
+
+        # Project onto null-space of all stored bases
+        for basis in bases:
+            if basis.shape[0] != g_flat.shape[0]:
+                # Dimension mismatch (different head architecture) — skip this basis
+                print(f"[GPM] Skipping basis (shape {basis.shape}) — "
+                      f"incompatible with current head params ({g_flat.shape[0]})")
+                continue
+            proj = basis @ (basis.T @ g_flat)
+            g_flat = g_flat - proj
+
+        # Slice back into per-layer tensors
         projected_grads = []
+        offset = 0
+        flat_idx = 0
         for g, v in zip(grads, variables):
             if g is None:
                 projected_grads.append(g)
-                continue
-                
-            g_np = g.numpy().ravel()
-            
-            # Orthogonal projection onto the null-space of all past task bases
-            for basis in bases:
-                # Calculate projection of gradient onto the basis: basis * (basis^T * g)
-                proj = basis @ (basis.T @ g_np)
-                # Subtract projection to get null-space component
-                g_np = g_np - proj
-                
-            # Reshape back to original variable shape
-            projected_g = tf.reshape(tf.constant(g_np, dtype=v.dtype), v.shape)
-            projected_grads.append(projected_g)
-            
+            else:
+                size = shapes[flat_idx][1]
+                chunk = g_flat[offset:offset + size]
+                projected_grads.append(tf.reshape(tf.constant(chunk, dtype=v.dtype), v.shape))
+                offset += size
+                flat_idx += 1
+
         return projected_grads
+

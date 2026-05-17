@@ -60,9 +60,10 @@ class FixMatchTrainer:
         return loss
 
     @tf.function
-    def train_step(self, x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u: float = 1.0):
+    def _compute_gradients(self, x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u: float = 1.0):
         """
-        Single FixMatch training step.
+        Forward pass + loss + gradients (runs inside tf.function graph for speed).
+        GPM projection is intentionally excluded — it needs eager .numpy() calls.
         """
         # 1. Pseudo-label generation (no gradient)
         emb_u_weak = self._encode(x_u_weak)
@@ -92,8 +93,17 @@ class FixMatchTrainer:
             total_loss = loss_s + lambda_u * loss_u
             
         grads = tape.gradient(total_loss, self.head.trainable_variables)
+        return grads, loss_s, loss_u, total_loss, tf.reduce_mean(mask)
+
+    def train_step(self, x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u: float = 1.0):
+        """
+        Single FixMatch training step (eager mode — allows GPM numpy projection).
+        """
+        grads, loss_s, loss_u, total_loss, mask_rate = self._compute_gradients(
+            x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u
+        )
         
-        # Project gradients through GPM if it exists and has stored bases
+        # GPM gradient projection runs in eager mode (needs .numpy())
         if self.gpm is not None:
             grads = self.gpm.project_gradients(grads, self.head.trainable_variables)
             
@@ -103,7 +113,7 @@ class FixMatchTrainer:
             "loss_s": loss_s,
             "loss_u": loss_u,
             "total_loss": total_loss,
-            "mask_rate": tf.reduce_mean(mask)
+            "mask_rate": mask_rate
         }
 
     def train(self, labeled_ds: tf.data.Dataset, unlabeled_ds: tf.data.Dataset, 
