@@ -1,124 +1,214 @@
 # SSSL-Based Continual Intrusion Detection System
 
-A research-grade, terminal-only IDS framework combining **Self-Supervised Learning**, **Semi-Supervised Learning (FixMatch)**, and **Continual Learning (GPM)** for network intrusion detection.
+A research-grade, terminal-only IDS framework combining **Self-Supervised Learning (SimCLR)**, **Semi-Supervised Learning (FixMatch + Focal Loss)**, and **Continual Learning (GPM)** for network intrusion detection on the UNSW-NB15 dataset.
+
+---
 
 ## Architecture
 
 ```
-Stage 1: SSL Pretraining (SimCLR)
+Stage 1 — SSL Pretraining (SimCLR)
     Unlabeled Traffic → Flow Encoder → Frozen Embeddings
 
-Stage 2: Task-Specific Heads (FixMatch + GPM)
+Stage 2 — Task-Specific Heads (FixMatch + Focal Loss + GPM)
     Frozen Encoder → Classifier Head (per attack type) → IDS Alert
     GPM projects gradients to null-space of past tasks → No Forgetting
 
 Anomaly Detection:
-    Frozen Encoder → Autoencoder / Isolation Forest → Zero-Day Score
+    Frozen Encoder → Autoencoder → Zero-Day Score
 ```
 
-## Quick Start
+---
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
+## Step-by-Step: How to Run
 
-# Full end-to-end benchmark (recommended first run)
-python main.py --mode benchmark
-
-# Train and test with CSV paths supplied from the terminal
-python main.py --mode pipeline --train_csv path/to/training.csv --test_csv path/to/testing.csv --label_col Label --ssl_epochs 5 --task_epochs 5
-
-# Train on UNSW-NB15 training-set.csv and evaluate on testing-set.csv
-python main.py --mode unsw --ssl_epochs 5 --task_epochs 5
-
-# Or step by step:
-python main.py --mode ssl --epochs 10          # Stage 1
-python main.py --mode task --task dos           # Stage 2: DoS head
-python main.py --mode task --task port_scan     # Stage 2: Port Scan head
-python main.py --mode evaluate                  # Metrics
-python main.py --mode predict                   # Inference
-```
-
-For a manual UNSW-NB15 run:
-
-```bash
-python main.py --mode ssl --train_csv ../IDS-UNSW_NB/UNSW_NB15_training-set.csv --label_col label --epochs 5
-python main.py --mode task --task intrusion --train_csv ../IDS-UNSW_NB/UNSW_NB15_training-set.csv --label_col label --epochs 5
-python main.py --mode evaluate --task intrusion --test_csv ../IDS-UNSW_NB/UNSW_NB15_testing-set.csv --label_col label
-```
-
-PowerShell example with explicit dataset paths:
+### Prerequisites
 
 ```powershell
-python main.py --mode pipeline `
-  --train_csv ../IDS-UNSW_NB/UNSW_NB15_training-set.csv `
-  --test_csv ../IDS-UNSW_NB/UNSW_NB15_testing-set.csv `
-  --label_col label `
-  --ssl_epochs 5 `
-  --task_epochs 5
+# Navigate to the project
+cd C:\Users\vuppa\Desktop\SSSL_Based_IDS\ids-system
+
+# Activate the virtual environment
+.\.venv\Scripts\activate
+
+# Install dependencies (first time only)
+pip install -r requirements.txt
 ```
+
+---
+
+### Option A — Full Pipeline (Recommended, One Command)
+
+Trains SSL encoder + intrusion head + evaluates + generates all plots automatically.
+
+```powershell
+python main.py --mode unsw --ssl_epochs 15 --task_epochs 20
+```
+
+This runs in order:
+1. SSL pretraining on `UNSW_NB15_training-set.csv`
+2. Intrusion task training (FixMatch + Focal Loss + class weights)
+3. Evaluation on `UNSW_NB15_testing-set.csv`
+4. All visualization plots saved to `./logs/plots/`
+
+---
+
+### Option B — Step by Step (Full Continual Learning)
+
+Run each stage manually to train all 3 task heads with GPM anti-forgetting.
+
+#### Step 1 — SSL Pretraining
+```powershell
+python main.py --mode ssl `
+  --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" `
+  --label_col "label" `
+  --epochs 15
+```
+> Saves frozen encoder to `./checkpoints/encoder_frozen.keras`
+
+---
+
+#### Step 2 — Train Intrusion Head (Binary: Normal vs Attack)
+```powershell
+python main.py --mode task --task intrusion `
+  --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" `
+  --label_col "label" `
+  --epochs 20
+```
+> Saves checkpoint to `./checkpoints/intrusion/`  
+> Saves training history to `./logs/task_intrusion/training_history.json`
+
+---
+
+#### Step 3 — Train DoS Head (Continual, GPM enabled)
+```powershell
+python main.py --mode task --task dos `
+  --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" `
+  --label_col "attack_cat" `
+  --epochs 10
+```
+> GPM captures gradient basis (6 components) and saves to `./checkpoints/gpm/memory_bank.pkl`
+
+---
+
+#### Step 4 — Train Port Scan Head (Continual, GPM enabled)
+```powershell
+python main.py --mode task --task port_scan `
+  --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" `
+  --label_col "attack_cat" `
+  --epochs 10
+```
+> GPM loads dos basis, protects it, then adds port_scan basis (14 components)  
+> Memory bank now has 2 task bases total
+
+---
+
+#### Step 5 — Evaluate
+```powershell
+python main.py --mode evaluate --task intrusion `
+  --test_csv "../IDS-UNSW_NB/UNSW_NB15_testing-set.csv" `
+  --label_col "label"
+```
+> Prints Accuracy, Precision, Recall, F1, ROC-AUC, PR-AUC  
+> Reports **optimal decision threshold** (found via PR-curve, maximizes F1)  
+> Saves confusion matrix to `./logs/eval/cm_intrusion.png`  
+> Saves all metrics to `./logs/eval/metrics_intrusion.json`
+
+---
+
+#### Step 6 — Generate Visualization Plots
+```powershell
+python main.py --mode visualize --task intrusion
+```
+
+Generates 4 plots in `./logs/plots/`:
+
+| Plot File | Contents |
+|-----------|----------|
+| `cl_metrics_dashboard.png` | Training loss curves, pseudo-label mask rate, per-task metrics, per-class recall |
+| `evaluation_metrics_intrusion.png` | ROC curve, PR curve, confusion matrix heatmap, per-class bar chart |
+| `threshold_analysis_intrusion.png` | Precision / Recall / F1 vs decision threshold sweep |
+| `memory_hierarchy.png` | GPM basis dimensionality, cumulative gradient subspace, SVD spectrum |
+
+---
+
+### Option C — Benchmark (Synthetic Data, No CSV needed)
+
+```powershell
+python main.py --mode benchmark
+```
+
+Runs the full pipeline on auto-generated synthetic data. Useful for verifying the setup works before using real data.
+
+---
+
+## Key Results (UNSW-NB15)
+
+| Mode | Attack Recall | Accuracy | F1 | ROC-AUC |
+|------|--------------|----------|----|---------|
+| Default threshold (0.5) | 0.66 | 0.77 | 0.77 | 0.978 |
+| **Optimal threshold (~0.001)** | **0.99** | **0.93** | **0.93** | **0.978** |
+
+> The optimal threshold is automatically found by the evaluation script using PR-curve analysis.
+
+---
+
+## Preprocessor Files (Important)
+
+Each task uses its own preprocessor because label columns differ:
+
+| Task | Label Column | Preprocessor File |
+|------|-------------|-------------------|
+| `intrusion` | `label` (binary 0/1) | `checkpoints/preprocessor.pkl` |
+| `dos` | `attack_cat` (strings) | `checkpoints/preprocessor_dos.pkl` |
+| `port_scan` | `attack_cat` (strings) | `checkpoints/preprocessor_port_scan.pkl` |
+
+---
 
 ## Project Structure
 
 ```
 ids-system/
-├── encoder/                 # SSL encoder + projection head + NT-Xent loss
-├── gpm/                     # Gradient Projection Memory (SVD-based)
-├── classifiers/             # Task-specific heads + FixMatch trainer
-├── anomaly/                 # Autoencoder & Isolation Forest detectors
-├── data/                    # Dataset loading, preprocessing, augmentations, tf.data
-├── training/                # train_ssl.py, train_task.py, evaluate.py, benchmark.py
-├── inference/               # Inference engine + CLI predict script
-├── configs/                 # YAML configurations
-├── checkpoints/             # Saved model weights
-├── logs/                    # TensorBoard logs & evaluation outputs
-├── tests/                   # Unit tests
-├── main.py                  # Master CLI entry point
+├── encoder/          # SimCLR encoder + projection head + NT-Xent loss
+├── gpm/              # Gradient Projection Memory (SVD-based anti-forgetting)
+├── classifiers/      # Task heads + FixMatch trainer (Focal Loss + class weights)
+├── anomaly/          # Autoencoder detector
+├── data/             # Dataset loading, preprocessing, augmentations, tf.data
+├── training/
+│   ├── train_ssl.py         # Stage 1: SSL pretraining
+│   ├── train_task.py        # Stage 2: Task head training
+│   ├── evaluate.py          # Evaluation + threshold search
+│   ├── visualize_metrics.py # All visualization plots
+│   └── benchmark.py         # End-to-end synthetic benchmark
+├── inference/        # Inference engine + predict CLI
+├── checkpoints/      # Saved model weights + GPM memory bank
+├── logs/
+│   ├── eval/         # Confusion matrices + metrics JSON
+│   ├── plots/        # All visualization plots
+│   └── task_*/       # TensorBoard logs + training history per task
+├── main.py           # Master CLI entry point
 └── requirements.txt
 ```
 
-## Modules
+---
 
-| Module | Purpose |
-|--------|---------|
-| **SSL Encoder** | SimCLR-based self-supervised pretraining on unlabeled flows |
-| **GPM** | Gradient Projection Memory for catastrophic forgetting prevention |
-| **FixMatch** | Semi-supervised training with pseudo-labels (100–500 labeled samples) |
-| **Anomaly Detector** | Autoencoder + Isolation Forest for zero-day detection |
-| **Inference Engine** | Parallel head scoring + anomaly detection → structured alerts |
+## All CLI Modes
 
-## Terminal Commands
+| Mode | Command | Description |
+|------|---------|-------------|
+| `ssl` | `python main.py --mode ssl` | Stage 1: SSL pretraining |
+| `task` | `python main.py --mode task --task intrusion` | Train a specific task head |
+| `evaluate` | `python main.py --mode evaluate --task intrusion` | Evaluate with optimal threshold |
+| `visualize` | `python main.py --mode visualize --task intrusion` | Generate all plots |
+| `unsw` | `python main.py --mode unsw` | Full UNSW-NB15 pipeline (1 command) |
+| `pipeline` | `python main.py --mode pipeline --train_csv ... --test_csv ...` | Custom CSV pipeline |
+| `benchmark` | `python main.py --mode benchmark` | Synthetic end-to-end benchmark |
+| `predict` | `python main.py --mode predict` | Run inference |
 
-| Command | Description |
-|---------|-------------|
-| `python training/train_ssl.py` | SSL pretraining |
-| `python training/train_task.py --task dos` | Train DoS classifier |
-| `python training/train_task.py --task port_scan` | Train Port Scan classifier |
-| `python training/evaluate.py` | Evaluate all heads |
-| `python inference/predict.py` | Run inference |
-| `python training/benchmark.py` | Full end-to-end benchmark |
-
-## Evaluation Metrics
-
-- Accuracy, Precision, Recall, F1-Score
-- ROC-AUC, PR-AUC
-- Confusion Matrices (saved as PNG)
-- Forgetting Matrix (continual learning)
-
-## Continual Learning Flow
-
-1. Train Task 1 (DoS) → Capture gradient basis via GPM
-2. Train Task 2 (Port Scan) → GPM projects gradients to null-space → Task 1 protected
-3. Train Task N+1 → All previous tasks remain stable
-
-## Dataset Support
-
-- CICIDS2017, CIC-IDS2018, UNSW-NB15, TON_IoT
-- Custom CSV datasets
-- Built-in synthetic data generator for testing
+---
 
 ## Requirements
 
 - Python 3.10+
 - TensorFlow 2.15+
-- NumPy, pandas, scikit-learn, matplotlib, tqdm, PyYAML
+- NumPy, pandas, scikit-learn, matplotlib, seaborn, tqdm, PyYAML
