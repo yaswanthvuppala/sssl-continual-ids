@@ -23,6 +23,7 @@ include/
 # --- Machine Learning Datasets & Large Data Files ---
 # Ignore the external dataset folder
 IDS-UNSW_NB/
+Agent_Chat/
 
 # Ignore large raw/processed data files specifically, but NOT the python scripts in ids-system/data/
 *.csv
