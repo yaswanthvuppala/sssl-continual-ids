@@ -222,6 +222,10 @@ def main():
     parser.add_argument("--task", type=str, default="all", choices=["all", "intrusion", "dos", "port_scan"],
                         help="Task head to evaluate")
     parser.add_argument("--test_csv", type=str, default=None, help="Testing CSV")
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99"],
+                        default=None, help="Load a supported raw dataset")
+    parser.add_argument("--data_path", type=str, default=None,
+                        help="Dataset directory or raw data file")
     parser.add_argument("--label_col", type=str, default="Label", help="Label column in the testing CSV")
     parser.add_argument("--preprocessor_path", type=str, default="./checkpoints/preprocessor.pkl",
                         help="Path to the fitted preprocessor")
@@ -237,8 +241,29 @@ def main():
     encoder.trainable = False
     embed_dim = encoder.output_shape[-1]
 
-    loader = FlowDatasetLoader(data_path=".")
-    if args.test_csv:
+    loader = FlowDatasetLoader(data_path=args.data_path or ".")
+    if args.dataset:
+        if not args.data_path:
+            raise ValueError("--data_path is required when --dataset is used")
+        if not os.path.exists(args.preprocessor_path):
+            raise FileNotFoundError(
+                f"Preprocessor not found at {args.preprocessor_path}. "
+                "Run SSL/task training on the training split first."
+            )
+        df = loader.load_dataset(
+            args.dataset, split="test", label_col=args.label_col
+        )
+        preprocessor = FlowPreprocessor.load(args.preprocessor_path)
+        features, labels_raw = preprocessor.transform(
+            df, label_col=args.label_col
+        )
+        if features.shape[1] != encoder.input_shape[-1]:
+            raise ValueError(
+                f"Testing features have {features.shape[1]} columns but the "
+                f"frozen encoder expects {encoder.input_shape[-1]}. Use the "
+                "preprocessor and encoder from the same training run."
+            )
+    elif args.test_csv:
         if not os.path.exists(args.preprocessor_path):
             raise FileNotFoundError(
                 f"Preprocessor not found at {args.preprocessor_path}. "

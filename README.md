@@ -1,6 +1,9 @@
 # SSSL-Based Continual Intrusion Detection System
 
-A research-grade, terminal-only IDS framework combining **Self-Supervised Learning (SimCLR)**, **Semi-Supervised Learning (FixMatch + Focal Loss)**, and **Continual Learning (GPM)** for network intrusion detection on the UNSW-NB15 dataset.
+A research-grade, terminal-only IDS framework combining **Self-Supervised Learning (SimCLR)**, **Semi-Supervised Learning (FixMatch + Focal Loss)**, and **Continual Learning (GPM)** for network intrusion detection on UNSW-NB15, CICIDS2017, and KDD Cup 99.
+
+See [`DATASET_SUPPORT_CICIDS2017_KDDCUP99.md`](DATASET_SUPPORT_CICIDS2017_KDDCUP99.md)
+for the exact dataset files, split policy, label mapping, and commands.
 
 ---
 
@@ -140,6 +143,17 @@ python main.py --mode benchmark
 
 Runs the full pipeline on auto-generated synthetic data. Useful for verifying the setup works before using real data.
 
+### Option D - CICIDS2017 or KDD Cup 99
+
+```powershell
+python main.py --mode cicids2017 --ssl_epochs 15 --task_epochs 20
+python main.py --mode kddcup99 --ssl_epochs 15 --task_epochs 20
+```
+
+KDD Cup 99 uses `kddcup.data_10_percent` for training and `corrected` for
+testing. CICIDS2017 uses a deterministic stratified 80/20 split within each
+source CSV.
+
 ---
 
 ## Key Results (UNSW-NB15)
@@ -201,6 +215,8 @@ ids-system/
 | `evaluate` | `python main.py --mode evaluate --task intrusion` | Evaluate with optimal threshold |
 | `visualize` | `python main.py --mode visualize --task intrusion` | Generate all plots |
 | `unsw` | `python main.py --mode unsw` | Full UNSW-NB15 pipeline (1 command) |
+| `cicids2017` | `python main.py --mode cicids2017` | Full CICIDS2017 pipeline |
+| `kddcup99` | `python main.py --mode kddcup99` | Full KDD Cup 99 pipeline |
 | `pipeline` | `python main.py --mode pipeline --train_csv ... --test_csv ...` | Custom CSV pipeline |
 | `benchmark` | `python main.py --mode benchmark` | Synthetic end-to-end benchmark |
 | `predict` | `python main.py --mode predict` | Run inference |

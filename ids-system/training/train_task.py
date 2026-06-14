@@ -42,7 +42,7 @@ def make_task_labels(task: str, labels: np.ndarray, classes: np.ndarray) -> np.n
 
     target_names = {
         "dos": ["dos"],
-        "port_scan": ["portscan", "port scan", "reconnaissance"],
+        "port_scan": ["portscan", "port scan", "port_scan", "probe", "reconnaissance"],
     }[task]
     normalized_classes = [str(c).strip().lower() for c in classes]
     target_indices = [i for i, c in enumerate(normalized_classes) if c in target_names]
@@ -60,6 +60,10 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32, help="Labeled batch size")
     parser.add_argument("--unlabeled_batch_size", type=int, default=128, help="Unlabeled batch size")
     parser.add_argument("--train_csv", type=str, default=None, help="Training CSV")
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99"],
+                        default=None, help="Load a supported raw dataset")
+    parser.add_argument("--data_path", type=str, default=None,
+                        help="Dataset directory or raw data file")
     parser.add_argument("--label_col", type=str, default="Label", help="Label column in the training CSV")
     parser.add_argument("--preprocessor_path", type=str, default=None,
                         help="Path to the fitted preprocessor (auto-selected per task if not set)")
@@ -92,8 +96,46 @@ def main():
     # Initialize Head
     head = build_task_head(args.task, embed_dim=encoder.output_shape[-1])
         
-    loader = FlowDatasetLoader(data_path=".")
-    if args.train_csv:
+    loader = FlowDatasetLoader(data_path=args.data_path or ".")
+    if args.dataset:
+        if not args.data_path:
+            raise ValueError("--data_path is required when --dataset is used")
+        df_labeled = loader.load_dataset(
+            args.dataset, split="train", label_col=args.label_col
+        )
+        expected_input_dim = encoder.input_shape[-1]
+        if os.path.exists(args.preprocessor_path):
+            preprocessor = FlowPreprocessor.load(args.preprocessor_path)
+            try:
+                X_l, y_l = preprocessor.transform(
+                    df_labeled, label_col=args.label_col
+                )
+            except (ValueError, KeyError) as e:
+                print(
+                    f"[WARN] Saved preprocessor incompatible with label column "
+                    f"'{args.label_col}': {e}"
+                )
+                print("[WARN] Refitting preprocessor on current dataset...")
+                preprocessor = FlowPreprocessor()
+                X_l, y_l = preprocessor.fit_transform(
+                    df_labeled, label_col=args.label_col
+                )
+                preprocessor.save(args.preprocessor_path)
+        else:
+            preprocessor = FlowPreprocessor()
+            X_l, y_l = preprocessor.fit_transform(
+                df_labeled, label_col=args.label_col
+            )
+            preprocessor.save(args.preprocessor_path)
+            print(f"Fitted preprocessor saved to {args.preprocessor_path}")
+        if X_l.shape[1] != expected_input_dim:
+            raise ValueError(
+                f"Training features have {X_l.shape[1]} columns but the frozen "
+                f"encoder expects {expected_input_dim}. Re-run SSL pretraining "
+                "for this dataset first."
+            )
+        X_u = X_l
+    elif args.train_csv:
         df_labeled = loader.load_csv(args.train_csv, label_col=args.label_col)
         expected_input_dim = encoder.input_shape[-1]
         if os.path.exists(args.preprocessor_path):

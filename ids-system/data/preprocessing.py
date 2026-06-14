@@ -92,7 +92,13 @@ class FlowPreprocessor:
         """Drops labels and obvious non-feature identifiers/leakage columns."""
         columns_to_drop = set(self.drop_cols)
         columns_to_drop.add(label_col)
-        for known_label_col in ["Label", "label", "attack_cat"]:
+        for known_label_col in [
+            "Label",
+            "label",
+            "attack_cat",
+            "AttackLabel",
+            "AttackCategory",
+        ]:
             if known_label_col != label_col:
                 columns_to_drop.add(known_label_col)
         return df.drop(columns=[c for c in columns_to_drop if c in df.columns])

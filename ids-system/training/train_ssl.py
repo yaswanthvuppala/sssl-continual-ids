@@ -75,13 +75,23 @@ def main():
     parser.add_argument("--epochs", type=int, default=10, help="Number of pretraining epochs")
     parser.add_argument("--batch_size", type=int, default=256, help="Batch size")
     parser.add_argument("--train_csv", type=str, default=None, help="Training CSV for real dataset pretraining")
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99"],
+                        default=None, help="Load a supported raw dataset")
+    parser.add_argument("--data_path", type=str, default=None,
+                        help="Dataset directory or raw data file")
     parser.add_argument("--label_col", type=str, default="Label", help="Label column in the training CSV")
     parser.add_argument("--preprocessor_path", type=str, default="./checkpoints/preprocessor.pkl",
                         help="Where to save the fitted preprocessor")
     args = parser.parse_args()
 
-    loader = FlowDatasetLoader(data_path=".")
-    if args.train_csv:
+    loader = FlowDatasetLoader(data_path=args.data_path or ".")
+    if args.dataset:
+        if not args.data_path:
+            raise ValueError("--data_path is required when --dataset is used")
+        df = loader.load_dataset(
+            args.dataset, split="train", label_col=args.label_col
+        )
+    elif args.train_csv:
         df = loader.load_csv(args.train_csv, label_col=args.label_col)
     else:
         df = loader.create_synthetic_data(num_samples=50000, num_features=80)

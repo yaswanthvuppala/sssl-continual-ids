@@ -8,6 +8,8 @@ Usage:
     python main.py --mode evaluate     # Evaluate all heads
     python main.py --mode pipeline --train_csv train.csv --test_csv test.csv
     python main.py --mode unsw         # Train on UNSW-NB15 train CSV, test on test CSV
+    python main.py --mode kddcup99     # 10% training data + corrected test data
+    python main.py --mode cicids2017   # Deterministic stratified 80/20 split
     python main.py --mode predict      # Run inference on synthetic data
     python main.py --mode benchmark    # Full end-to-end benchmark
 """
@@ -56,11 +58,40 @@ def run_csv_pipeline(
     run(f'"{python}" training/visualize_metrics.py --task {task}')
 
 
+def run_named_dataset_pipeline(
+    python: str,
+    dataset: str,
+    data_path: str,
+    label_col: str,
+    task: str,
+    ssl_epochs: int,
+    task_epochs: int,
+):
+    common_args = (
+        f'--dataset "{dataset}" --data_path "{data_path}" '
+        f'--label_col "{label_col}"'
+    )
+    run(
+        f'"{python}" training/train_ssl.py {common_args} '
+        f"--epochs {ssl_epochs}"
+    )
+    run(
+        f'"{python}" training/train_task.py --task {task} {common_args} '
+        f"--epochs {task_epochs}"
+    )
+    run(f'"{python}" training/evaluate.py --task {task} {common_args}')
+    run(f'"{python}" training/visualize_metrics.py --task {task}')
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="SSSL-Based Continual IDS — Master CLI")
     parser.add_argument("--mode", type=str, required=True,
-                        choices=["ssl", "task", "evaluate", "predict", "benchmark", "pipeline", "unsw", "visualize"],
+                        choices=[
+                            "ssl", "task", "evaluate", "predict", "benchmark",
+                            "pipeline", "unsw", "kddcup99", "cicids2017",
+                            "visualize",
+                        ],
                         help="Operating mode")
     parser.add_argument("--task", type=str, default=None, help="Task name (for --mode task/evaluate/pipeline)")
     parser.add_argument("--epochs", type=int, default=None, help="Override epoch count")
@@ -69,6 +100,10 @@ def main():
     parser.add_argument("--train_csv", type=str, default=None, help="Training CSV path")
     parser.add_argument("--test_csv", type=str, default=None, help="Testing CSV path")
     parser.add_argument("--label_col", type=str, default=None, help="Dataset label column")
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99"],
+                        default=None, help="Supported raw dataset for stage-specific modes")
+    parser.add_argument("--data_path", type=str, default=None,
+                        help="Dataset directory or raw file")
     args = parser.parse_args()
 
     python = sys.executable
@@ -78,6 +113,8 @@ def main():
         if args.epochs:
             cmd += f" --epochs {args.epochs}"
         cmd = add_arg(cmd, "train_csv", args.train_csv)
+        cmd = add_arg(cmd, "dataset", args.dataset)
+        cmd = add_arg(cmd, "data_path", args.data_path)
         cmd = add_arg(cmd, "label_col", args.label_col)
         run(cmd)
 
@@ -89,6 +126,8 @@ def main():
         if args.epochs:
             cmd += f" --epochs {args.epochs}"
         cmd = add_arg(cmd, "train_csv", args.train_csv)
+        cmd = add_arg(cmd, "dataset", args.dataset)
+        cmd = add_arg(cmd, "data_path", args.data_path)
         cmd = add_arg(cmd, "label_col", args.label_col)
         run(cmd)
 
@@ -97,6 +136,8 @@ def main():
         if args.task:
             cmd += f" --task {args.task}"
         cmd = add_arg(cmd, "test_csv", args.test_csv)
+        cmd = add_arg(cmd, "dataset", args.dataset)
+        cmd = add_arg(cmd, "data_path", args.data_path)
         cmd = add_arg(cmd, "label_col", args.label_col)
         run(cmd)
 
@@ -140,6 +181,29 @@ def main():
             python=python,
             train_csv=train_csv,
             test_csv=test_csv,
+            label_col=label_col,
+            task=task,
+            ssl_epochs=ssl_epochs,
+            task_epochs=task_epochs,
+        )
+
+    elif args.mode in {"kddcup99", "cicids2017"}:
+        dataset = args.mode
+        data_path = args.data_path or {
+            "kddcup99": "../KDDCUP99",
+            "cicids2017": "../CICIDS2017",
+        }[dataset]
+        task = args.task or "intrusion"
+        label_col = args.label_col or (
+            "Label" if task == "intrusion" else "AttackCategory"
+        )
+        ssl_epochs = args.ssl_epochs or args.epochs or 5
+        task_epochs = args.task_epochs or args.epochs or 5
+
+        run_named_dataset_pipeline(
+            python=python,
+            dataset=dataset,
+            data_path=data_path,
             label_col=label_col,
             task=task,
             ssl_epochs=ssl_epochs,
