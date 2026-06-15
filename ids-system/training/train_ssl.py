@@ -15,17 +15,20 @@ from encoder.projection_head import build_projection_head
 from encoder.losses import nt_xent_loss
 
 class SSLPretrainer:
-    def __init__(self, input_dim: int, hidden_dim: int = 512, embed_dim: int = 256, proj_dim: int = 128):
+    def __init__(self, input_dim: int, hidden_dim: int = 512, embed_dim: int = 256, proj_dim: int = 128,
+                 ckpt_dir: str = None, log_dir: str = None):
         self.encoder = build_flow_encoder(input_dim, hidden_dim, embed_dim)
         self.projector = build_projection_head(embed_dim, proj_dim)
         self.temperature = 0.1
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4, weight_decay=1e-4)
         
         self.trainable_vars = self.encoder.trainable_variables + self.projector.trainable_variables
+        self.log_dir = log_dir or './logs/ssl'
         
         # Setup checkpointing
+        ssl_ckpt_dir = ckpt_dir or './checkpoints/ssl'
         self.checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, encoder=self.encoder, projector=self.projector)
-        self.ckpt_manager = tf.train.CheckpointManager(self.checkpoint, './checkpoints/ssl', max_to_keep=3)
+        self.ckpt_manager = tf.train.CheckpointManager(self.checkpoint, ssl_ckpt_dir, max_to_keep=3)
 
     @tf.function
     def train_step(self, x1, x2):
@@ -42,7 +45,7 @@ class SSLPretrainer:
         print(f"Starting SSL Pretraining for {epochs} epochs...")
         
         # Create summary writer for TensorBoard
-        writer = tf.summary.create_file_writer('./logs/ssl')
+        writer = tf.summary.create_file_writer(self.log_dir)
         
         for epoch in range(epochs):
             total_loss = 0.0
@@ -75,14 +78,26 @@ def main():
     parser.add_argument("--epochs", type=int, default=10, help="Number of pretraining epochs")
     parser.add_argument("--batch_size", type=int, default=256, help="Batch size")
     parser.add_argument("--train_csv", type=str, default=None, help="Training CSV for real dataset pretraining")
-    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99"],
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw"],
                         default=None, help="Load a supported raw dataset")
     parser.add_argument("--data_path", type=str, default=None,
                         help="Dataset directory or raw data file")
     parser.add_argument("--label_col", type=str, default="Label", help="Label column in the training CSV")
-    parser.add_argument("--preprocessor_path", type=str, default="./checkpoints/preprocessor.pkl",
+    parser.add_argument("--preprocessor_path", type=str, default=None,
                         help="Where to save the fitted preprocessor")
+    parser.add_argument("--dataset_name", type=str, default="default",
+                        help="Dataset identifier for scoping output paths")
     args = parser.parse_args()
+
+    # Resolve dataset-scoped base paths
+    ds = args.dataset_name
+    ckpt_base = f"./checkpoints/{ds}"
+    log_base = f"./logs/{ds}"
+    os.makedirs(ckpt_base, exist_ok=True)
+    os.makedirs(log_base, exist_ok=True)
+
+    if args.preprocessor_path is None:
+        args.preprocessor_path = f"{ckpt_base}/preprocessor.pkl"
 
     loader = FlowDatasetLoader(data_path=args.data_path or ".")
     if args.dataset:
@@ -105,9 +120,13 @@ def main():
     
     input_dim = features.shape[1]
     
-    pretrainer = SSLPretrainer(input_dim=input_dim)
+    pretrainer = SSLPretrainer(
+        input_dim=input_dim,
+        ckpt_dir=f"{ckpt_base}/ssl",
+        log_dir=f"{log_base}/ssl",
+    )
     pretrainer.train(dataset, epochs=args.epochs)
-    pretrainer.save_frozen_encoder()
+    pretrainer.save_frozen_encoder(f"{ckpt_base}/encoder_frozen.keras")
 
 if __name__ == "__main__":
     main()

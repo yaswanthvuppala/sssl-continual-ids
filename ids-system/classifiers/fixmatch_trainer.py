@@ -17,13 +17,16 @@ class FixMatchTrainer:
     """
     def __init__(self, encoder: tf.keras.Model, head: tf.keras.Model, gpm=None, 
                  lr: float = 0.03, confidence_threshold: float = 0.90,
-                 class_weights: dict = None, focal_gamma: float = 2.0):
+                 class_weights: dict = None, focal_gamma: float = 2.0,
+                 log_dir: str = None, ckpt_dir: str = None):
         self.encoder = encoder
         self.head = head
         self.gpm = gpm
         self.confidence_threshold = confidence_threshold
         self.class_weights = class_weights  # {0: w0, 1: w1, ...}
         self.focal_gamma = focal_gamma
+        self.log_dir = log_dir
+        self.ckpt_dir = ckpt_dir
         
         # Ensure encoder is frozen
         self.encoder.trainable = False
@@ -123,8 +126,10 @@ class FixMatchTrainer:
         Returns training history dict for visualization.
         """
         print(f"Starting FixMatch training for task: {task_name}")
-        writer = tf.summary.create_file_writer(f'./logs/task_{task_name}')
-        ckpt_manager = tf.train.CheckpointManager(self.checkpoint, f'./checkpoints/{task_name}', max_to_keep=1)
+        log_path = self.log_dir or f'./logs/task_{task_name}'
+        writer = tf.summary.create_file_writer(log_path)
+        ckpt_path = self.ckpt_dir or f'./checkpoints/{task_name}'
+        ckpt_manager = tf.train.CheckpointManager(self.checkpoint, ckpt_path, max_to_keep=1)
         
         # Prepare class weight tensor
         if self.class_weights is not None:
@@ -181,7 +186,7 @@ class FixMatchTrainer:
         print(f"Task {task_name} training complete.")
 
         # Save training history for visualization
-        history_dir = f"./logs/task_{task_name}"
+        history_dir = self.log_dir or f"./logs/task_{task_name}"
         os.makedirs(history_dir, exist_ok=True)
         history_path = os.path.join(history_dir, "training_history.json")
         with open(history_path, "w") as f:

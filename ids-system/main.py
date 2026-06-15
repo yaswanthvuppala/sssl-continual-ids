@@ -41,21 +41,23 @@ def run_csv_pipeline(
     task: str,
     ssl_epochs: int,
     task_epochs: int,
+    dataset_name: str = "default",
 ):
+    ds_arg = f' --dataset_name "{dataset_name}"'
     run(
         f'"{python}" training/train_ssl.py --train_csv "{train_csv}" '
-        f'--label_col "{label_col}" --epochs {ssl_epochs}'
+        f'--label_col "{label_col}" --epochs {ssl_epochs}{ds_arg}'
     )
     run(
         f'"{python}" training/train_task.py --task {task} --train_csv "{train_csv}" '
-        f'--label_col "{label_col}" --epochs {task_epochs}'
+        f'--label_col "{label_col}" --epochs {task_epochs}{ds_arg}'
     )
     run(
         f'"{python}" training/evaluate.py --task {task} --test_csv "{test_csv}" '
-        f'--label_col "{label_col}"'
+        f'--label_col "{label_col}"{ds_arg}'
     )
     # Auto-generate visualization plots
-    run(f'"{python}" training/visualize_metrics.py --task {task}')
+    run(f'"{python}" training/visualize_metrics.py --task {task}{ds_arg}')
 
 
 def run_named_dataset_pipeline(
@@ -66,21 +68,23 @@ def run_named_dataset_pipeline(
     task: str,
     ssl_epochs: int,
     task_epochs: int,
+    dataset_name: str = "default",
 ):
     common_args = (
         f'--dataset "{dataset}" --data_path "{data_path}" '
         f'--label_col "{label_col}"'
     )
+    ds_arg = f' --dataset_name "{dataset_name}"'
     run(
         f'"{python}" training/train_ssl.py {common_args} '
-        f"--epochs {ssl_epochs}"
+        f"--epochs {ssl_epochs}{ds_arg}"
     )
     run(
         f'"{python}" training/train_task.py --task {task} {common_args} '
-        f"--epochs {task_epochs}"
+        f"--epochs {task_epochs}{ds_arg}"
     )
-    run(f'"{python}" training/evaluate.py --task {task} {common_args}')
-    run(f'"{python}" training/visualize_metrics.py --task {task}')
+    run(f'"{python}" training/evaluate.py --task {task} {common_args}{ds_arg}')
+    run(f'"{python}" training/visualize_metrics.py --task {task}{ds_arg}')
 
 
 
@@ -100,15 +104,20 @@ def main():
     parser.add_argument("--train_csv", type=str, default=None, help="Training CSV path")
     parser.add_argument("--test_csv", type=str, default=None, help="Testing CSV path")
     parser.add_argument("--label_col", type=str, default=None, help="Dataset label column")
-    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99"],
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw"],
                         default=None, help="Supported raw dataset for stage-specific modes")
     parser.add_argument("--data_path", type=str, default=None,
                         help="Dataset directory or raw file")
+    parser.add_argument("--dataset_name", type=str, default=None,
+                        help="Dataset identifier for scoping output paths (auto-set by dataset modes)")
     args = parser.parse_args()
 
     python = sys.executable
+    # Resolve dataset_name: explicit flag > auto from mode > 'default'
+    dataset_name = args.dataset_name or "default"
 
     if args.mode == "ssl":
+        ds_arg = f' --dataset_name "{dataset_name}"'
         cmd = f'"{python}" training/train_ssl.py'
         if args.epochs:
             cmd += f" --epochs {args.epochs}"
@@ -116,12 +125,14 @@ def main():
         cmd = add_arg(cmd, "dataset", args.dataset)
         cmd = add_arg(cmd, "data_path", args.data_path)
         cmd = add_arg(cmd, "label_col", args.label_col)
+        cmd += ds_arg
         run(cmd)
 
     elif args.mode == "task":
         if not args.task:
             print("ERROR: --task is required for mode 'task'")
             sys.exit(1)
+        ds_arg = f' --dataset_name "{dataset_name}"'
         cmd = f'"{python}" training/train_task.py --task {args.task}'
         if args.epochs:
             cmd += f" --epochs {args.epochs}"
@@ -129,9 +140,11 @@ def main():
         cmd = add_arg(cmd, "dataset", args.dataset)
         cmd = add_arg(cmd, "data_path", args.data_path)
         cmd = add_arg(cmd, "label_col", args.label_col)
+        cmd += ds_arg
         run(cmd)
 
     elif args.mode == "evaluate":
+        ds_arg = f' --dataset_name "{dataset_name}"'
         cmd = f'"{python}" training/evaluate.py'
         if args.task:
             cmd += f" --task {args.task}"
@@ -139,6 +152,7 @@ def main():
         cmd = add_arg(cmd, "dataset", args.dataset)
         cmd = add_arg(cmd, "data_path", args.data_path)
         cmd = add_arg(cmd, "label_col", args.label_col)
+        cmd += ds_arg
         run(cmd)
 
     elif args.mode == "predict":
@@ -149,7 +163,7 @@ def main():
 
     elif args.mode == "visualize":
         task = args.task or "intrusion"
-        run(f'"{python}" training/visualize_metrics.py --task {task}')
+        run(f'"{python}" training/visualize_metrics.py --task {task} --dataset_name "{dataset_name}"')
 
     elif args.mode == "pipeline":
         if not args.train_csv or not args.test_csv:
@@ -167,6 +181,7 @@ def main():
             task=task,
             ssl_epochs=ssl_epochs,
             task_epochs=task_epochs,
+            dataset_name=dataset_name,
         )
 
     elif args.mode == "unsw":
@@ -176,6 +191,7 @@ def main():
         task = args.task or "intrusion"
         ssl_epochs = args.ssl_epochs or args.epochs or 5
         task_epochs = args.task_epochs or args.epochs or 5
+        ds = args.dataset_name or "unsw"
 
         run_csv_pipeline(
             python=python,
@@ -185,6 +201,7 @@ def main():
             task=task,
             ssl_epochs=ssl_epochs,
             task_epochs=task_epochs,
+            dataset_name=ds,
         )
 
     elif args.mode in {"kddcup99", "cicids2017"}:
@@ -199,6 +216,7 @@ def main():
         )
         ssl_epochs = args.ssl_epochs or args.epochs or 5
         task_epochs = args.task_epochs or args.epochs or 5
+        ds = args.dataset_name or dataset
 
         run_named_dataset_pipeline(
             python=python,
@@ -208,6 +226,7 @@ def main():
             task=task,
             ssl_epochs=ssl_epochs,
             task_epochs=task_epochs,
+            dataset_name=ds,
         )
 
 

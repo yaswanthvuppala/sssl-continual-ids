@@ -12,7 +12,8 @@ class MixMatchTrainer:
     """
     def __init__(self, encoder: tf.keras.Model, head: tf.keras.Model, gpm=None,
                  lr: float = 0.03, temperature: float = 0.5, alpha: float = 0.75,
-                 num_augments: int = 2, lambda_u: float = 1.0):
+                 num_augments: int = 2, lambda_u: float = 1.0,
+                 log_dir: str = None):
         self.encoder = encoder
         self.head = head
         self.gpm = gpm
@@ -20,6 +21,7 @@ class MixMatchTrainer:
         self.alpha = alpha              # Beta distribution parameter for MixUp
         self.num_augments = num_augments
         self.lambda_u = lambda_u
+        self.log_dir = log_dir
 
         self.encoder.trainable = False
         self.optimizer = tf.keras.optimizers.SGD(learning_rate=lr, momentum=0.9, nesterov=True)
@@ -69,7 +71,8 @@ class MixMatchTrainer:
               task_name: str, num_classes: int = 2, epochs: int = 10):
         """Training loop for MixMatch."""
         print(f"Starting MixMatch training for task: {task_name}")
-        writer = tf.summary.create_file_writer(f'./logs/mixmatch_{task_name}')
+        log_path = self.log_dir or f'./logs/mixmatch_{task_name}'
+        writer = tf.summary.create_file_writer(log_path)
         unlabeled_iter = iter(unlabeled_ds.repeat())
 
         for epoch in range(epochs):

@@ -60,7 +60,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32, help="Labeled batch size")
     parser.add_argument("--unlabeled_batch_size", type=int, default=128, help="Unlabeled batch size")
     parser.add_argument("--train_csv", type=str, default=None, help="Training CSV")
-    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99"],
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw"],
                         default=None, help="Load a supported raw dataset")
     parser.add_argument("--data_path", type=str, default=None,
                         help="Dataset directory or raw data file")
@@ -69,27 +69,36 @@ def main():
                         help="Path to the fitted preprocessor (auto-selected per task if not set)")
     parser.add_argument("--max_labeled", type=int, default=None,
                         help="Optional cap on labeled training samples")
+    parser.add_argument("--dataset_name", type=str, default="default",
+                        help="Dataset identifier for scoping output paths")
     args = parser.parse_args()
 
     print(f"Initializing Continual Learning for Task: {args.task}")
+
+    # Resolve dataset-scoped base paths
+    ds = args.dataset_name
+    ckpt_base = f"./checkpoints/{ds}"
+    log_base = f"./logs/{ds}"
+    os.makedirs(ckpt_base, exist_ok=True)
+    os.makedirs(log_base, exist_ok=True)
 
     # Resolve preprocessor path per task so label encoders never conflict.
     # intrusion uses 'label' (binary 0/1); dos/port_scan use 'attack_cat' (strings).
     if args.preprocessor_path is None:
         if args.task == "intrusion":
-            args.preprocessor_path = "./checkpoints/preprocessor.pkl"
+            args.preprocessor_path = f"{ckpt_base}/preprocessor.pkl"
         else:
-            args.preprocessor_path = f"./checkpoints/preprocessor_{args.task}.pkl"
+            args.preprocessor_path = f"{ckpt_base}/preprocessor_{args.task}.pkl"
     print(f"Using preprocessor: {args.preprocessor_path}")
 
     # Load frozen encoder
-    encoder = load_frozen_encoder()
+    encoder = load_frozen_encoder(f"{ckpt_base}/encoder_frozen.keras")
     
     # Initialize GPM only for continual task heads. The generic intrusion task is a single binary head.
     memory_bank = None
     gpm = None
     if args.task != "intrusion":
-        memory_bank = MemoryBank(save_dir="./checkpoints/gpm")
+        memory_bank = MemoryBank(save_dir=f"{ckpt_base}/gpm")
         memory_bank.load()
         gpm = GradientProjectionMemory(threshold=0.97, memory_bank=memory_bank)
     
@@ -196,7 +205,9 @@ def main():
     # Train via FixMatch with focal loss and class weighting
     trainer = FixMatchTrainer(
         encoder=encoder, head=head, gpm=gpm, lr=0.03,
-        class_weights=class_weights, focal_gamma=2.0, confidence_threshold=0.90
+        class_weights=class_weights, focal_gamma=2.0, confidence_threshold=0.90,
+        log_dir=f"{log_base}/task_{args.task}",
+        ckpt_dir=f"{ckpt_base}/{args.task}",
     )
     trainer.train(labeled_ds, unlabeled_ds, task_name=args.task, epochs=args.epochs)
     

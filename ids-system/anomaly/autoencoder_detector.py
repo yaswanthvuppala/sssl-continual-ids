@@ -91,8 +91,9 @@ class AutoencoderDetector:
         errors = self.compute_reconstruction_errors(embedding)
         return bool(errors[0] > self.threshold)
     
-    def save(self, path: str = "./checkpoints/anomaly_ae.keras"):
+    def save(self, path: str = None):
         """Save the trained autoencoder."""
+        path = path or "./checkpoints/anomaly_ae.keras"
         import os
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.model.save(path)
@@ -100,8 +101,9 @@ class AutoencoderDetector:
         np.save(path.replace(".keras", "_threshold.npy"), np.array([self.threshold]))
         print(f"Anomaly autoencoder saved to {path}")
         
-    def load(self, path: str = "./checkpoints/anomaly_ae.keras"):
+    def load(self, path: str = None):
         """Load a previously trained autoencoder."""
+        path = path or "./checkpoints/anomaly_ae.keras"
         self.model = tf.keras.models.load_model(path)
         threshold_path = path.replace(".keras", "_threshold.npy")
         import os

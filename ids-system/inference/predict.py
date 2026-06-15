@@ -31,20 +31,24 @@ def load_encoder(path: str = "./checkpoints/encoder_frozen.keras") -> tf.keras.M
     return model
 
 
-def load_heads(encoder_out_dim: int) -> dict:
+def load_heads(encoder_out_dim: int, ckpt_base: str = "./checkpoints") -> dict:
     """Load saved heads or build fresh ones for demo."""
     from classifiers.dos_head import build_dos_head
     from classifiers.scan_head import build_scan_head
     from classifiers.exfiltration_head import build_exfiltration_head
 
     heads = {}
-    for name, builder, ckpt_dir in [
-        ("dos_ddos", build_dos_head, "./checkpoints/dos"),
-        ("port_scan", build_scan_head, "./checkpoints/port_scan"),
-        ("exfiltration", build_exfiltration_head, "./checkpoints/exfiltration"),
+    for name, builder, task_dir in [
+        ("dos_ddos", build_dos_head, "dos"),
+        ("port_scan", build_scan_head, "port_scan"),
+        ("exfiltration", build_exfiltration_head, "exfiltration"),
     ]:
         head = builder(embed_dim=encoder_out_dim)
+        ckpt_dir = f"{ckpt_base}/{task_dir}"
         ckpt = tf.train.latest_checkpoint(ckpt_dir)
+        if not ckpt:
+            # Fallback to legacy flat path
+            ckpt = tf.train.latest_checkpoint(f"./checkpoints/{task_dir}")
         if ckpt:
             tf.train.Checkpoint(head=head).restore(ckpt).expect_partial()
             print(f"  Loaded checkpoint for {name}")
@@ -58,17 +62,25 @@ def main():
     parser = argparse.ArgumentParser(description="IDS Inference — Local Prediction")
     parser.add_argument("--csv", type=str, default=None, help="Path to CSV file with flow features")
     parser.add_argument("--num_samples", type=int, default=20, help="Number of synthetic samples if no CSV")
+    parser.add_argument("--dataset_name", type=str, default="default",
+                        help="Dataset identifier for scoping checkpoint paths")
     args = parser.parse_args()
 
+    # Resolve dataset-scoped checkpoint base
+    ckpt_base = f"./checkpoints/{args.dataset_name}"
+
     # --- Load / build components ---
-    encoder = load_encoder()
+    encoder = load_encoder(f"{ckpt_base}/encoder_frozen.keras")
     embed_dim = encoder.output_shape[-1]
-    heads = load_heads(embed_dim)
+    heads = load_heads(embed_dim, ckpt_base=ckpt_base)
 
     anomaly_det = AutoencoderDetector(embed_dim=embed_dim)
-    ae_path = "./checkpoints/anomaly_ae.keras"
+    ae_path = f"{ckpt_base}/anomaly_ae.keras"
     if os.path.exists(ae_path):
         anomaly_det.load(ae_path)
+    elif os.path.exists("./checkpoints/anomaly_ae.keras"):
+        print("[INFO] Falling back to legacy anomaly AE path")
+        anomaly_det.load("./checkpoints/anomaly_ae.keras")
     else:
         print("[WARN] Anomaly autoencoder not trained. Using untrained detector (demo mode).")
 

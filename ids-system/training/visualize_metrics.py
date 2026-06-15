@@ -22,7 +22,7 @@ import seaborn as sns
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # --- Style Configuration ---
-PLOT_DIR = "./logs/plots"
+PLOT_DIR = "./logs/plots"  # Default, overridden per-dataset at runtime
 STYLE = {
     "figure.facecolor": "#0f0f1a",
     "axes.facecolor": "#1a1a2e",
@@ -52,19 +52,34 @@ def _save(fig, name):
     print(f"  Saved: {path}")
 
 
+def _save_to(fig, directory, name):
+    """Save a figure to a specific directory (dataset-scoped)."""
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, name)
+    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print(f"  Saved: {path}")
+
+
 # ═══════════════════════════════════════════════════════════
 # 1. CL Metrics Dashboard
 # ═══════════════════════════════════════════════════════════
-def plot_cl_metrics_dashboard(task_names=None):
+def plot_cl_metrics_dashboard(task_names=None, dataset_name="default", log_base=None, plot_dir=None):
     """Training loss curves + mask rate + per-task evaluation bar chart."""
     print("\n[1/4] Generating CL Metrics Dashboard...")
     _apply_style()
 
+    log_base = log_base or "./logs"
+    plot_dir = plot_dir or PLOT_DIR
+    ds_label = dataset_name.upper() if dataset_name != "default" else ""
+
     if task_names is None:
         task_names = []
-        for d in sorted(os.listdir("./logs")):
-            if d.startswith("task_") and os.path.isdir(f"./logs/{d}"):
-                task_names.append(d.replace("task_", ""))
+        task_log_dir = f"{log_base}"
+        if os.path.isdir(task_log_dir):
+            for d in sorted(os.listdir(task_log_dir)):
+                if d.startswith("task_") and os.path.isdir(os.path.join(task_log_dir, d)):
+                    task_names.append(d.replace("task_", ""))
     if not task_names:
         print("  No task training logs found. Skipping.")
         return
@@ -75,7 +90,7 @@ def plot_cl_metrics_dashboard(task_names=None):
     # --- Panel 1: Training Loss Curves ---
     ax1 = fig.add_subplot(gs[0, 0])
     for i, t in enumerate(task_names):
-        hp = f"./logs/task_{t}/training_history.json"
+        hp = f"{log_base}/task_{t}/training_history.json"
         if not os.path.exists(hp):
             continue
         h = json.load(open(hp))
@@ -93,7 +108,7 @@ def plot_cl_metrics_dashboard(task_names=None):
     # --- Panel 2: Mask Rate ---
     ax2 = fig.add_subplot(gs[0, 1])
     for i, t in enumerate(task_names):
-        hp = f"./logs/task_{t}/training_history.json"
+        hp = f"{log_base}/task_{t}/training_history.json"
         if not os.path.exists(hp):
             continue
         h = json.load(open(hp))
@@ -113,7 +128,7 @@ def plot_cl_metrics_dashboard(task_names=None):
     metric_labels = ["Accuracy", "Recall", "F1", "Precision"]
     bar_data = {}
     for t in task_names:
-        mp = f"./logs/eval/metrics_{t}.json"
+        mp = f"{log_base}/eval/metrics_{t}.json"
         if os.path.exists(mp):
             bar_data[t] = json.load(open(mp))
     if bar_data:
@@ -152,20 +167,33 @@ def plot_cl_metrics_dashboard(task_names=None):
     ax4.legend(fontsize=9, framealpha=0.3)
     ax4.grid(True, axis='y', linestyle='--', alpha=0.3)
 
-    fig.suptitle("Continual Learning — Metrics Dashboard", fontsize=16,
+    title = "Continual Learning — Metrics Dashboard"
+    if ds_label:
+        title += f" ({ds_label})"
+    fig.suptitle(title, fontsize=16,
                  fontweight="bold", color="#00d4ff", y=0.98)
-    _save(fig, "cl_metrics_dashboard.png")
+    _save_to(fig, plot_dir, "cl_metrics_dashboard.png")
 
 
 # ═══════════════════════════════════════════════════════════
 # 2. Memory Level Hierarchy
 # ═══════════════════════════════════════════════════════════
-def plot_memory_hierarchy():
+def plot_memory_hierarchy(dataset_name="default", ckpt_base=None, plot_dir=None):
     """GPM basis dimensionality, cumulative coverage, SVD spectrum."""
     print("\n[2/4] Generating Memory Hierarchy Plot...")
     _apply_style()
 
-    bank_path = "./checkpoints/gpm/memory_bank.pkl"
+    ckpt_base = ckpt_base or "./checkpoints"
+    plot_dir = plot_dir or PLOT_DIR
+    ds_label = dataset_name.upper() if dataset_name != "default" else ""
+
+    bank_path = f"{ckpt_base}/gpm/memory_bank.pkl"
+    # Fallback to legacy flat path if dataset-scoped path doesn't exist
+    if not os.path.exists(bank_path):
+        legacy_path = "./checkpoints/gpm/memory_bank.pkl"
+        if os.path.exists(legacy_path):
+            print(f"  [INFO] Falling back to legacy GPM path: {legacy_path}")
+            bank_path = legacy_path
     if not os.path.exists(bank_path):
         # If no GPM bank exists, create an informational summary plot
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -180,9 +208,12 @@ def plot_memory_hierarchy():
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
         ax.axis('off')
-        fig.suptitle("GPM Memory Level Hierarchy", fontsize=16,
+        title = "GPM Memory Level Hierarchy"
+        if ds_label:
+            title += f" ({ds_label})"
+        fig.suptitle(title, fontsize=16,
                      fontweight="bold", color="#00d4ff")
-        _save(fig, "memory_hierarchy.png")
+        _save_to(fig, plot_dir, "memory_hierarchy.png")
         return
 
     with open(bank_path, "rb") as f:
@@ -237,20 +268,27 @@ def plot_memory_hierarchy():
     ax3.legend(fontsize=9, framealpha=0.3)
     ax3.grid(True, linestyle='--', alpha=0.3)
 
-    fig.suptitle("GPM Memory Level Hierarchy", fontsize=16,
+    title = "GPM Memory Level Hierarchy"
+    if ds_label:
+        title += f" ({ds_label})"
+    fig.suptitle(title, fontsize=16,
                  fontweight="bold", color="#00d4ff", y=1.02)
-    _save(fig, "memory_hierarchy.png")
+    _save_to(fig, plot_dir, "memory_hierarchy.png")
 
 
 # ═══════════════════════════════════════════════════════════
 # 3. Evaluation Metrics Suite (ROC, PR, CM, Bar)
 # ═══════════════════════════════════════════════════════════
-def plot_evaluation_metrics(task_name="intrusion"):
+def plot_evaluation_metrics(task_name="intrusion", dataset_name="default", log_base=None, plot_dir=None):
     """ROC curve, PR curve, confusion matrix heatmap, per-class bar chart."""
     print(f"\n[3/4] Generating Evaluation Metrics for '{task_name}'...")
     _apply_style()
 
-    mp = f"./logs/eval/metrics_{task_name}.json"
+    log_base = log_base or "./logs"
+    plot_dir = plot_dir or PLOT_DIR
+    ds_label = dataset_name.upper() if dataset_name != "default" else ""
+
+    mp = f"{log_base}/eval/metrics_{task_name}.json"
     if not os.path.exists(mp):
         print(f"  No metrics file found at {mp}. Run evaluation first.")
         return
@@ -333,20 +371,27 @@ def plot_evaluation_metrics(task_name="intrusion"):
     ax4.legend(fontsize=9, framealpha=0.3)
     ax4.grid(True, axis='y', linestyle='--', alpha=0.3)
 
-    fig.suptitle(f"Evaluation Metrics — {task_name}", fontsize=16,
+    title = f"Evaluation Metrics — {task_name}"
+    if ds_label:
+        title += f" ({ds_label})"
+    fig.suptitle(title, fontsize=16,
                  fontweight="bold", color="#00d4ff", y=0.98)
-    _save(fig, f"evaluation_metrics_{task_name}.png")
+    _save_to(fig, plot_dir, f"evaluation_metrics_{task_name}.png")
 
 
 # ═══════════════════════════════════════════════════════════
 # 4. Threshold Analysis
 # ═══════════════════════════════════════════════════════════
-def plot_threshold_analysis(task_name="intrusion"):
+def plot_threshold_analysis(task_name="intrusion", dataset_name="default", log_base=None, plot_dir=None):
     """Precision vs Recall vs F1 as a function of decision threshold."""
     print(f"\n[4/4] Generating Threshold Analysis for '{task_name}'...")
     _apply_style()
 
-    mp = f"./logs/eval/metrics_{task_name}.json"
+    log_base = log_base or "./logs"
+    plot_dir = plot_dir or PLOT_DIR
+    ds_label = dataset_name.upper() if dataset_name != "default" else ""
+
+    mp = f"{log_base}/eval/metrics_{task_name}.json"
     if not os.path.exists(mp):
         print(f"  No metrics file found. Skipping.")
         return
@@ -386,34 +431,43 @@ def plot_threshold_analysis(task_name="intrusion"):
     ax.legend(fontsize=10, framealpha=0.3, loc="center left")
     ax.grid(True, linestyle='--', alpha=0.3)
 
-    _save(fig, f"threshold_analysis_{task_name}.png")
+    _save_to(fig, plot_dir, f"threshold_analysis_{task_name}.png")
 
 
 # ═══════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════
-def generate_all_plots(task_name=None):
+def generate_all_plots(task_name=None, dataset_name="default"):
     """Generate all visualization plots."""
     print("=" * 60)
     print("  SSSL-IDS — Generating Visualization Plots")
+    if dataset_name != "default":
+        print(f"  Dataset: {dataset_name.upper()}")
     print("=" * 60)
 
     task = task_name or "intrusion"
-    plot_cl_metrics_dashboard()
-    plot_memory_hierarchy()
-    plot_evaluation_metrics(task)
-    plot_threshold_analysis(task)
+    ckpt_base = f"./checkpoints/{dataset_name}"
+    log_base = f"./logs/{dataset_name}"
+    plot_dir = f"{log_base}/plots"
+    os.makedirs(plot_dir, exist_ok=True)
+
+    plot_cl_metrics_dashboard(dataset_name=dataset_name, log_base=log_base, plot_dir=plot_dir)
+    plot_memory_hierarchy(dataset_name=dataset_name, ckpt_base=ckpt_base, plot_dir=plot_dir)
+    plot_evaluation_metrics(task, dataset_name=dataset_name, log_base=log_base, plot_dir=plot_dir)
+    plot_threshold_analysis(task, dataset_name=dataset_name, log_base=log_base, plot_dir=plot_dir)
 
     print(f"\n{'='*60}")
-    print(f"  All plots saved to {os.path.abspath(PLOT_DIR)}")
+    print(f"  All plots saved to {os.path.abspath(plot_dir)}")
     print(f"{'='*60}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Generate IDS Visualization Plots")
     parser.add_argument("--task", type=str, default="intrusion", help="Task to visualize")
+    parser.add_argument("--dataset_name", type=str, default="default",
+                        help="Dataset identifier for scoping output paths")
     args = parser.parse_args()
-    generate_all_plots(task_name=args.task)
+    generate_all_plots(task_name=args.task, dataset_name=args.dataset_name)
 
 
 if __name__ == "__main__":

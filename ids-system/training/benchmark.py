@@ -73,8 +73,9 @@ def main():
         print(f"  SSL Epoch {epoch+1}/{SSL_EPOCHS} — loss: {np.mean(losses):.4f}")
 
     encoder.trainable = False
-    os.makedirs("./checkpoints", exist_ok=True)
-    encoder.save("./checkpoints/encoder_frozen.keras")
+    ckpt_base = "./checkpoints/benchmark"
+    os.makedirs(ckpt_base, exist_ok=True)
+    encoder.save(f"{ckpt_base}/encoder_frozen.keras")
     print("  Encoder frozen and saved.")
 
     # ── Anomaly Detector Training ──
@@ -91,7 +92,7 @@ def main():
     ae_det.save()
 
     # ── Stage 2: Task Learning with GPM ──
-    memory_bank = MemoryBank(save_dir="./checkpoints/gpm")
+    memory_bank = MemoryBank(save_dir=f"{ckpt_base}/gpm")
     gpm = GradientProjectionMemory(threshold=0.97, memory_bank=memory_bank)
     loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
