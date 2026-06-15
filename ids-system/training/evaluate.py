@@ -243,7 +243,10 @@ def main():
     os.makedirs(eval_dir, exist_ok=True)
 
     if args.preprocessor_path is None:
-        args.preprocessor_path = f"{ckpt_base}/preprocessor.pkl"
+        if args.task == "intrusion" or args.task == "all":
+            args.preprocessor_path = f"{ckpt_base}/preprocessor.pkl"
+        else:
+            args.preprocessor_path = f"{ckpt_base}/preprocessor_{args.task}.pkl"
 
     # Load or build encoder
     encoder_path = f"{ckpt_base}/encoder_frozen.keras"
