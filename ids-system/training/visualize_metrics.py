@@ -230,11 +230,13 @@ def plot_memory_hierarchy(dataset_name="default", ckpt_base=None, plot_dir=None)
     ax1 = fig.add_subplot(gs[0, 0])
     dims = [b.shape[1] for b in bases]
     task_labels = [f"Task {i+1}" for i in range(len(bases))]
+    max_dim = max(dims) if dims else 1
     bars = ax1.bar(task_labels, dims, color=PALETTE[:len(dims)], alpha=0.85,
                    edgecolor='white', linewidth=0.5)
     for bar, d in zip(bars, dims):
-        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(0.2, max_dim * 0.03),
                  str(d), ha='center', fontsize=11, color='#e0e0ff', fontweight='bold')
+    ax1.set_ylim(0, max_dim * 1.25)
     ax1.set_ylabel("Basis Components")
     ax1.set_title("GPM Basis Dimensionality", fontsize=13, fontweight="bold")
     ax1.grid(True, axis='y', linestyle='--', alpha=0.3)
@@ -248,8 +250,10 @@ def plot_memory_hierarchy(dataset_name="default", ckpt_base=None, plot_dir=None)
              markersize=8, linewidth=2.5)
     ax2.fill_between(range(1, len(bases)+1), coverage_pct, alpha=0.15, color=PALETTE[0])
     for i, (c, p) in enumerate(zip(cumulative, coverage_pct)):
-        ax2.annotate(f"{p:.1f}%", (i+1, p), textcoords="offset points",
+        pct_label = f"{p:.3f}%" if p < 0.1 else f"{p:.1f}%"
+        ax2.annotate(pct_label, (i+1, p), textcoords="offset points",
                      xytext=(0, 12), ha='center', fontsize=10, color='#ffd43b')
+    ax2.set_ylim(0, max(float(coverage_pct[-1]) * 1.25, 0.01))
     ax2.set_xlabel("Tasks Trained")
     ax2.set_ylabel("Subspace Coverage (%)")
     ax2.set_title("Cumulative Gradient Subspace", fontsize=13, fontweight="bold")

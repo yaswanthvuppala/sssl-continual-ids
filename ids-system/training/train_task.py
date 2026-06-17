@@ -69,6 +69,8 @@ def main():
                         help="Path to the fitted preprocessor (auto-selected per task if not set)")
     parser.add_argument("--max_labeled", type=int, default=None,
                         help="Optional cap on labeled training samples")
+    parser.add_argument("--max_gpm_batches", type=int, default=512,
+                        help="Maximum valid labeled batches to use for GPM SVD capture; use 0 to scan all batches")
     parser.add_argument("--dataset_name", type=str, default="default",
                         help="Dataset identifier for scoping output paths")
     args = parser.parse_args()
@@ -198,6 +200,13 @@ def main():
     print(f"Class distribution: {dict(zip(unique_classes.tolist(), class_counts.tolist()))}")
     print(f"Class weights: {class_weights}")
     
+    # Log if class imbalance is severe (ratio > 50:1)
+    if len(class_counts) > 1:
+        min_c, max_c = min(class_counts), max(class_counts)
+        ratio = max_c / max(1, min_c)
+        if ratio > 50.0:
+            print(f"[WARN] Severe class imbalance detected (ratio {ratio:.1f}:1). FixMatchTrainer will cap class weights and clip gradients.")
+    
     # Create datasets
     labeled_ds = make_labeled_dataset(X_l, y_l_binary, batch_size=args.batch_size)
     unlabeled_ds = make_unlabeled_dataset(X_u, batch_size=args.unlabeled_batch_size, for_ssl=False)
@@ -208,29 +217,39 @@ def main():
         class_weights=class_weights, focal_gamma=2.0, confidence_threshold=0.90,
         log_dir=f"{log_base}/task_{args.task}",
         ckpt_dir=f"{ckpt_base}/{args.task}",
+        clip_norm=1.0,
+        max_class_weight=10.0
     )
     trainer.train(labeled_ds, unlabeled_ds, task_name=args.task, epochs=args.epochs)
     
     # After training, capture the gradients for this task to protect it in the future
     if gpm is not None and memory_bank is not None:
         print(f"Capturing GPM basis for {args.task}...")
-        loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-    
-        # We use a combined model just to pass to GPM which expects a single callable.
-        class TaskModel(tf.keras.Model):
-            def __init__(self, enc, hd):
-                super().__init__()
-                self.enc = enc
-                self.hd = hd
-            @property
-            def trainable_variables(self):
-                return self.hd.trainable_variables
-            def call(self, x, training=False):
-                return self.hd(self.enc(x, training=False), training=training)
-            
-        combined_model = TaskModel(encoder, head)
-        gpm.capture_gradient_basis(combined_model, labeled_ds, loss_fn)
-        memory_bank.save()
+        try:
+            loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+        
+            # We use a combined model just to pass to GPM which expects a single callable.
+            class TaskModel(tf.keras.Model):
+                def __init__(self, enc, hd):
+                    super().__init__()
+                    self.enc = enc
+                    self.hd = hd
+                @property
+                def trainable_variables(self):
+                    return self.hd.trainable_variables
+                def call(self, x, training=False):
+                    return self.hd(self.enc(x, training=False), training=training)
+                
+            combined_model = TaskModel(encoder, head)
+            gpm.capture_gradient_basis(
+                combined_model,
+                labeled_ds,
+                loss_fn,
+                max_batches=args.max_gpm_batches,
+            )
+            memory_bank.save()
+        except Exception as e:
+            print(f"[ERROR] Failed to capture GPM basis for task {args.task}: {e}")
     
     print(f"Pipeline for {args.task} completed successfully.")
 

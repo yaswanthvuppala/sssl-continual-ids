@@ -18,7 +18,8 @@ class FixMatchTrainer:
     def __init__(self, encoder: tf.keras.Model, head: tf.keras.Model, gpm=None, 
                  lr: float = 0.03, confidence_threshold: float = 0.90,
                  class_weights: dict = None, focal_gamma: float = 2.0,
-                 log_dir: str = None, ckpt_dir: str = None):
+                 log_dir: str = None, ckpt_dir: str = None,
+                 clip_norm: float = 1.0, max_class_weight: float = 10.0):
         self.encoder = encoder
         self.head = head
         self.gpm = gpm
@@ -27,12 +28,14 @@ class FixMatchTrainer:
         self.focal_gamma = focal_gamma
         self.log_dir = log_dir
         self.ckpt_dir = ckpt_dir
+        self.clip_norm = clip_norm
+        self.max_class_weight = max_class_weight
         
         # Ensure encoder is frozen
         self.encoder.trainable = False
         
-        # SGD with momentum is standard for FixMatch
-        self.optimizer = tf.keras.optimizers.SGD(learning_rate=lr, momentum=0.9, nesterov=True)
+        # SGD with momentum is standard for FixMatch, with global gradient clipping to stabilize training
+        self.optimizer = tf.keras.optimizers.SGD(learning_rate=lr, momentum=0.9, nesterov=True, global_clipnorm=self.clip_norm)
         self.loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction="none")
 
         self.checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, head=self.head)
@@ -106,6 +109,26 @@ class FixMatchTrainer:
             x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u
         )
         
+        # Check for NaN or Inf in grads or total_loss
+        has_nan = False
+        for g in grads:
+            if g is not None:
+                if tf.reduce_any(tf.math.is_nan(g)) or tf.reduce_any(tf.math.is_inf(g)):
+                    has_nan = True
+                    break
+        if tf.math.is_nan(total_loss) or tf.math.is_inf(total_loss):
+            has_nan = True
+
+        if has_nan:
+            # We don't apply gradients if they contain NaN to prevent weights corruption
+            return {
+                "loss_s": loss_s,
+                "loss_u": loss_u,
+                "total_loss": total_loss,
+                "mask_rate": mask_rate,
+                "is_nan": tf.constant(True)
+            }
+
         # GPM gradient projection runs in eager mode (needs .numpy())
         if self.gpm is not None:
             grads = self.gpm.project_gradients(grads, self.head.trainable_variables)
@@ -116,7 +139,8 @@ class FixMatchTrainer:
             "loss_s": loss_s,
             "loss_u": loss_u,
             "total_loss": total_loss,
-            "mask_rate": mask_rate
+            "mask_rate": mask_rate,
+            "is_nan": tf.constant(False)
         }
 
     def train(self, labeled_ds: tf.data.Dataset, unlabeled_ds: tf.data.Dataset, 
@@ -137,7 +161,8 @@ class FixMatchTrainer:
             cw_array = np.ones(num_classes, dtype=np.float32)
             for cls_id, w in self.class_weights.items():
                 if cls_id < num_classes:
-                    cw_array[cls_id] = w
+                    # Cap class weights to prevent gradient explosion
+                    cw_array[cls_id] = min(float(w), self.max_class_weight)
             class_weight_tensor = tf.constant(cw_array, dtype=tf.float32)
         else:
             num_classes = self.head.output_shape[-1]
@@ -160,9 +185,15 @@ class FixMatchTrainer:
                 
                 step_metrics = self.train_step(x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u)
                 
-                for k, v in step_metrics.items():
-                    metrics[k] += float(v)
-                steps += 1
+                # Check for NaNs before accumulating
+                is_nan = bool(step_metrics.get("is_nan", False))
+                if not is_nan:
+                    for k in metrics.keys():
+                        metrics[k] += float(step_metrics[k])
+                    steps += 1
+                else:
+                    # Log a warning to stdout (using print inside tqdm is clean if infrequent)
+                    tqdm.write("WARNING: NaN/Inf encountered in training step. Skipping metrics accumulation and model update.")
                 
                 pbar.set_postfix({
                     "Ls": f"{float(step_metrics['loss_s']):.3f}", 
