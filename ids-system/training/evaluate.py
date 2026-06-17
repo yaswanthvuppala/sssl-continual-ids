@@ -68,8 +68,10 @@ def find_optimal_threshold(labels, probs_positive, strategy="f1"):
 
 
 def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
-                  features: np.ndarray, labels: np.ndarray, task_name: str):
+                  features: np.ndarray, labels: np.ndarray, task_name: str,
+                  eval_dir: str = None):
     """Evaluate a single classifier head and print metrics."""
+    eval_dir = eval_dir or "./logs/eval"
     embeddings = encoder(tf.constant(features, dtype=tf.float32), training=False).numpy()
     logits = head(tf.constant(embeddings, dtype=tf.float32), training=False).numpy()
     probs = tf.nn.softmax(logits, axis=-1).numpy()
@@ -165,7 +167,7 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
     metrics_dict["confusion_matrix"] = cm.tolist()
 
     # Save confusion matrix plot
-    os.makedirs("./logs/eval", exist_ok=True)
+    os.makedirs(eval_dir, exist_ok=True)
     fig, ax = plt.subplots(figsize=(5, 4))
     ax.matshow(cm, cmap="Blues", alpha=0.7)
     for (i, j), val in np.ndenumerate(cm):
@@ -174,12 +176,12 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
     ax.set_ylabel("True")
     ax.set_title(f"Confusion Matrix — {task_name}")
     plt.tight_layout()
-    plt.savefig(f"./logs/eval/cm_{task_name}.png", dpi=150)
+    plt.savefig(f"{eval_dir}/cm_{task_name}.png", dpi=150)
     plt.close()
-    print(f"  Confusion matrix saved to ./logs/eval/cm_{task_name}.png")
+    print(f"  Confusion matrix saved to {eval_dir}/cm_{task_name}.png")
 
     # Save metrics as JSON for the visualization script
-    metrics_path = f"./logs/eval/metrics_{task_name}.json"
+    metrics_path = f"{eval_dir}/metrics_{task_name}.json"
     with open(metrics_path, "w") as f:
         json.dump(metrics_dict, f, indent=2)
     print(f"  Metrics saved to {metrics_path}")
@@ -222,23 +224,69 @@ def main():
     parser.add_argument("--task", type=str, default="all", choices=["all", "intrusion", "dos", "port_scan"],
                         help="Task head to evaluate")
     parser.add_argument("--test_csv", type=str, default=None, help="Testing CSV")
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw"],
+                        default=None, help="Load a supported raw dataset")
+    parser.add_argument("--data_path", type=str, default=None,
+                        help="Dataset directory or raw data file")
     parser.add_argument("--label_col", type=str, default="Label", help="Label column in the testing CSV")
-    parser.add_argument("--preprocessor_path", type=str, default="./checkpoints/preprocessor.pkl",
+    parser.add_argument("--preprocessor_path", type=str, default=None,
                         help="Path to the fitted preprocessor")
+    parser.add_argument("--dataset_name", type=str, default="default",
+                        help="Dataset identifier for scoping output paths")
     args = parser.parse_args()
 
+    # Resolve dataset-scoped base paths
+    ds = args.dataset_name
+    ckpt_base = f"./checkpoints/{ds}"
+    log_base = f"./logs/{ds}"
+    eval_dir = f"{log_base}/eval"
+    os.makedirs(eval_dir, exist_ok=True)
+
+    if args.preprocessor_path is None:
+        if args.task == "intrusion" or args.task == "all":
+            args.preprocessor_path = f"{ckpt_base}/preprocessor.pkl"
+        else:
+            args.preprocessor_path = f"{ckpt_base}/preprocessor_{args.task}.pkl"
+
     # Load or build encoder
-    encoder_path = "./checkpoints/encoder_frozen.keras"
+    encoder_path = f"{ckpt_base}/encoder_frozen.keras"
     if os.path.exists(encoder_path):
         encoder = tf.keras.models.load_model(encoder_path)
     else:
-        print("[WARN] No frozen encoder found; using fresh encoder for demo.")
-        encoder = build_flow_encoder(input_dim=80)
+        # Fallback to old flat path for backward compatibility
+        old_path = "./checkpoints/encoder_frozen.keras"
+        if os.path.exists(old_path):
+            print(f"[INFO] Falling back to legacy encoder path: {old_path}")
+            encoder = tf.keras.models.load_model(old_path)
+        else:
+            print("[WARN] No frozen encoder found; using fresh encoder for demo.")
+            encoder = build_flow_encoder(input_dim=80)
     encoder.trainable = False
     embed_dim = encoder.output_shape[-1]
 
-    loader = FlowDatasetLoader(data_path=".")
-    if args.test_csv:
+    loader = FlowDatasetLoader(data_path=args.data_path or ".")
+    if args.dataset:
+        if not args.data_path:
+            raise ValueError("--data_path is required when --dataset is used")
+        if not os.path.exists(args.preprocessor_path):
+            raise FileNotFoundError(
+                f"Preprocessor not found at {args.preprocessor_path}. "
+                "Run SSL/task training on the training split first."
+            )
+        df = loader.load_dataset(
+            args.dataset, split="test", label_col=args.label_col
+        )
+        preprocessor = FlowPreprocessor.load(args.preprocessor_path)
+        features, labels_raw = preprocessor.transform(
+            df, label_col=args.label_col
+        )
+        if features.shape[1] != encoder.input_shape[-1]:
+            raise ValueError(
+                f"Testing features have {features.shape[1]} columns but the "
+                f"frozen encoder expects {encoder.input_shape[-1]}. Use the "
+                "preprocessor and encoder from the same training run."
+            )
+    elif args.test_csv:
         if not os.path.exists(args.preprocessor_path):
             raise FileNotFoundError(
                 f"Preprocessor not found at {args.preprocessor_path}. "
@@ -262,14 +310,18 @@ def main():
     task_names = ["intrusion", "dos", "port_scan"] if args.task == "all" else [args.task]
     for task_name in task_names:
         head = build_task_head(task_name, embed_dim=embed_dim)
-        ckpt = tf.train.latest_checkpoint(f"./checkpoints/{task_name}")
+        ckpt = tf.train.latest_checkpoint(f"{ckpt_base}/{task_name}")
+        if not ckpt:
+            # Fallback to old flat path
+            ckpt = tf.train.latest_checkpoint(f"./checkpoints/{task_name}")
         if ckpt:
             tf.train.Checkpoint(head=head).restore(ckpt).expect_partial()
         else:
             print(f"[WARN] No checkpoint for {task_name}; using random weights.")
 
         binary_labels = make_task_labels(task_name, labels_raw, preprocessor.get_classes())
-        metrics = evaluate_head(encoder, head, features, binary_labels, task_name)
+        metrics = evaluate_head(encoder, head, features, binary_labels, task_name,
+                                eval_dir=eval_dir)
         results[task_name] = [metrics["f1"]]
 
     # Print forgetting summary

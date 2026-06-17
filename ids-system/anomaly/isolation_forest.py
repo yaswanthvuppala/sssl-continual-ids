@@ -52,15 +52,17 @@ class IsolationForestDetector:
         pred = self.model.predict(embedding)
         return bool(pred[0] == -1)  # -1 = outlier in sklearn
         
-    def save(self, path: str = "./checkpoints/isolation_forest.pkl"):
+    def save(self, path: str = None):
         """Save the fitted model to disk."""
+        path = path or "./checkpoints/isolation_forest.pkl"
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
             pickle.dump(self.model, f)
         print(f"Isolation Forest saved to {path}")
         
-    def load(self, path: str = "./checkpoints/isolation_forest.pkl"):
+    def load(self, path: str = None):
         """Load a previously fitted model from disk."""
+        path = path or "./checkpoints/isolation_forest.pkl"
         with open(path, "rb") as f:
             self.model = pickle.load(f)
         self.is_fitted = True
