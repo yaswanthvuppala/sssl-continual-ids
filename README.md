@@ -21,6 +21,16 @@ Anomaly Detection:
     Frozen Encoder → Autoencoder → Zero-Day Score
 ```
 
+### Inference Engine & Decision Logic
+
+To yield highly calibrated alerts across multi-task heads, the inference pipeline (`IDSInferenceEngine`) employs:
+- **Temperature Scaling (Calibration)**: During validation/evaluation, logit outputs for each task are calibrated using a fitted temperature parameter $T > 0$ via a `TemperatureScaler`. These parameters are stored under `logs/{dataset_name}/eval/temperature_{task_name}.json`.
+- **Per-Head Thresholding**: Each task classifier head uses its own optimal classification threshold (loaded from `metrics_{task_name}.json`) instead of a single global threshold.
+- **Margin-Based Decision Routing**: Logits are scaled by task temperature and converted to probabilities. The engine calculates the margins:
+  $$\text{Margin} = P(\text{attack}) - \text{Threshold}$$
+  The system triggers the alert of the classifier head with the **highest positive margin**.
+- **Zero-Day Detector Fallback**: If no head yields a positive margin, the encoder embedding is sent to the Anomaly Autoencoder. A reconstruction error exceeding the anomaly threshold triggers a `zero-day / unknown` alert; otherwise, the flow is marked benign.
+
 ---
 
 ## Step-by-Step: How to Run
@@ -111,7 +121,7 @@ python main.py --mode cicids2017 --task port_scan --ssl_epochs 15 --task_epochs 
 All outputs are dataset-scoped to prevent path collisions:
 - **Plots**: `logs/{dataset_name}/plots/`
 - **Checkpoints**: `checkpoints/{dataset_name}/`
-- **Training Logs**: `logs/{dataset_name}/`
+- **Training Logs & Evaluation Logs**: `logs/{dataset_name}/` (contains training summaries, `eval/metrics_{task_name}.json` with optimal thresholds, and `eval/temperature_{task_name}.json` for logit temperature scaling)
 
 ---
 
