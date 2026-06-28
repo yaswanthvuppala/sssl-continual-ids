@@ -8,7 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from data.dataset_loader import FlowDatasetLoader
 from data.preprocessing import FlowPreprocessor
-from data.tf_dataset import make_labeled_dataset, make_unlabeled_dataset
+from data.tf_dataset import make_labeled_dataset, make_unlabeled_dataset, make_balanced_dataset
 from classifiers.base_head import build_classifier_head
 from classifiers.dos_head import build_dos_head
 from classifiers.scan_head import build_scan_head
@@ -16,9 +16,131 @@ from classifiers.fixmatch_trainer import FixMatchTrainer
 from gpm.gpm import GradientProjectionMemory
 from gpm.memory_bank import MemoryBank
 
+def load_keras3_weights_manually(model, zip_path: str):
+    """Loads Keras 3 weights manually and robustly using type-and-order matching."""
+    import zipfile
+    import tempfile
+    import shutil
+    import h5py
+    import os
+    temp_dir = tempfile.mkdtemp(dir=".")
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+            with h5py.File(weights_path, 'r') as f:
+                # 1. Parse all H5 layers and categorize them
+                h5_layers = []
+                layers_root = f['layers']
+                for grp_name in layers_root.keys():
+                    vars_path = f"layers/{grp_name}/vars"
+                    if vars_path in f:
+                        name_attr = f[vars_path].attrs.get('name')
+                        if name_attr:
+                            if isinstance(name_attr, bytes):
+                                name_attr = name_attr.decode('utf-8')
+                            
+                            weight_vals = []
+                            idx = 0
+                            while f"{vars_path}/{idx}" in f:
+                                weight_vals.append(f[f"{vars_path}/{idx}"][()])
+                                idx += 1
+                            
+                            h5_layers.append({
+                                'grp_name': grp_name,
+                                'vars_path': vars_path,
+                                'saved_name': name_attr,
+                                'weights': weight_vals,
+                                'count': len(weight_vals)
+                            })
+                
+                # 2. Build mapping using exact names and types/orders
+                custom_names_in_h5 = {}
+                unnamed_dense_in_h5 = []
+                unnamed_bn_in_h5 = []
+                
+                for h5_layer in h5_layers:
+                    saved_name = h5_layer['saved_name']
+                    is_default = (
+                        saved_name.startswith("dense") or 
+                        saved_name.startswith("batch_normalization") or
+                        saved_name.startswith("dropout") or
+                        saved_name.startswith("input")
+                    )
+                    if not is_default:
+                        custom_names_in_h5[saved_name] = h5_layer
+                    else:
+                        if h5_layer['count'] == 2:  # Dense
+                            unnamed_dense_in_h5.append(h5_layer)
+                        elif h5_layer['count'] == 4:  # BatchNormalization
+                            unnamed_bn_in_h5.append(h5_layer)
+                
+                keras2_dense_unnamed = []
+                keras2_bn_unnamed = []
+                
+                for layer in model.layers:
+                    if not layer.weights:
+                        continue
+                    name = layer.name
+                    is_custom = name in ['ae_latent', 'ae_reconstruction', 'embedding']
+                    if is_custom:
+                        h5_layer = custom_names_in_h5.get(name)
+                        if h5_layer:
+                            layer.set_weights(h5_layer['weights'])
+                            print(f"  Matched custom layer '{name}' -> H5 group '{h5_layer['grp_name']}'")
+                        else:
+                            print(f"  [ERROR] Custom layer '{name}' not found in weights file.")
+                    else:
+                        if len(layer.weights) == 2:
+                            keras2_dense_unnamed.append(layer)
+                        elif len(layer.weights) == 4:
+                            keras2_bn_unnamed.append(layer)
+                
+                # Match unnamed Dense layers by order
+                for i, layer in enumerate(keras2_dense_unnamed):
+                    if i < len(unnamed_dense_in_h5):
+                        h5_layer = unnamed_dense_in_h5[i]
+                        layer.set_weights(h5_layer['weights'])
+                        print(f"  Matched unnamed Dense layer #{i} '{layer.name}' -> H5 group '{h5_layer['grp_name']}'")
+                        
+                # Match unnamed BN layers by order
+                for i, layer in enumerate(keras2_bn_unnamed):
+                    if i < len(unnamed_bn_in_h5):
+                        h5_layer = unnamed_bn_in_h5[i]
+                        layer.set_weights(h5_layer['weights'])
+                        print(f"  Matched unnamed BN layer #{i} '{layer.name}' -> H5 group '{h5_layer['grp_name']}'")
+    finally:
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+
+
 def load_frozen_encoder(path: str = "./checkpoints/encoder_frozen.keras") -> tf.keras.Model:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Frozen encoder not found at {path}. Run train_ssl.py first.")
+        
+    import zipfile
+    if zipfile.is_zipfile(path):
+        print(f"Encoder Keras 3 zip format detected. Loading weights manually.")
+        from encoder.flow_encoder import build_flow_encoder
+        import tempfile
+        import shutil
+        import h5py
+        temp_dir = tempfile.mkdtemp(dir=".")
+        try:
+            with zipfile.ZipFile(path, 'r') as zip_ref:
+                weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+                with h5py.File(weights_path, 'r') as f:
+                    input_dim = f['layers/dense/vars/0'].shape[0]
+            
+            model = build_flow_encoder(input_dim=input_dim)
+            load_keras3_weights_manually(model, path)
+            model.trainable = False
+            return model
+        except Exception as e:
+            print(f"[WARN] Failed to load Keras 3 encoder manually: {e}. Falling back to default loader.")
+        finally:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+
     model = tf.keras.models.load_model(path)
     model.trainable = False
     return model
@@ -73,6 +195,10 @@ def main():
                         help="Maximum valid labeled batches to use for GPM SVD capture; use 0 to scan all batches")
     parser.add_argument("--dataset_name", type=str, default="default",
                         help="Dataset identifier for scoping output paths")
+    parser.add_argument("--balanced", action="store_true",
+                        help="Use class-balanced batching (50/50 per batch)")
+    parser.add_argument("--warmup_epochs", type=int, default=3,
+                        help="Number of warmup epochs with no pseudo-label loss")
     args = parser.parse_args()
 
     print(f"Initializing Continual Learning for Task: {args.task}")
@@ -208,7 +334,24 @@ def main():
             print(f"[WARN] Severe class imbalance detected (ratio {ratio:.1f}:1). FixMatchTrainer will cap class weights and clip gradients.")
     
     # Create datasets
-    labeled_ds = make_labeled_dataset(X_l, y_l_binary, batch_size=args.batch_size)
+    if args.balanced:
+        print(f"[INFO] Using class-balanced batching (50/50 per batch)")
+        labeled_ds = make_balanced_dataset(X_l, y_l_binary, batch_size=args.batch_size)
+        # For balanced datasets, set a fixed number of steps per epoch
+        # since the dataset is infinite (uses .repeat() internally)
+        minority_count = int(min(class_counts))
+        steps_per_epoch = min(2 * minority_count // args.batch_size, 2000)
+        labeled_ds = labeled_ds.take(steps_per_epoch)
+        print(f"[INFO] Steps per epoch (balanced): {steps_per_epoch}")
+    else:
+        labeled_ds = make_labeled_dataset(X_l, y_l_binary, batch_size=args.batch_size)
+    
+    # Cap the steps per epoch if the dataset is large, to keep training times reasonable.
+    max_steps_per_epoch = 2000
+    if len(X_l) / args.batch_size > max_steps_per_epoch:
+        print(f"[INFO] Labeled dataset is large ({len(X_l)} samples). Capping steps per epoch to {max_steps_per_epoch} for speed.")
+        labeled_ds = labeled_ds.take(max_steps_per_epoch)
+        
     unlabeled_ds = make_unlabeled_dataset(X_u, batch_size=args.unlabeled_batch_size, for_ssl=False)
     
     # Train via FixMatch with focal loss and class weighting
@@ -220,7 +363,8 @@ def main():
         clip_norm=1.0,
         max_class_weight=10.0
     )
-    trainer.train(labeled_ds, unlabeled_ds, task_name=args.task, epochs=args.epochs)
+    trainer.train(labeled_ds, unlabeled_ds, task_name=args.task, epochs=args.epochs,
+                  warmup_epochs=args.warmup_epochs)
     
     # After training, capture the gradients for this task to protect it in the future
     if gpm is not None and memory_bank is not None:
