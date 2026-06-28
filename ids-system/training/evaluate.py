@@ -107,17 +107,37 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
 
     # ROC-AUC (binary tasks) + optimal threshold
     if probs.shape[-1] == 2:
+        # --- Temperature Calibration ---
+        calibrated_probs = probs
+        temperature = 1.0
         try:
-            roc = roc_auc_score(labels, probs[:, 1])
-            pr_auc = average_precision_score(labels, probs[:, 1])
+            from training.calibration import TemperatureScaler
+            scaler = TemperatureScaler()
+            print("  Fitting Temperature Scaler for probability calibration...")
+            scaler.fit(logits, labels)
+            temperature = scaler.temperature
+            print(f"  Learned Temperature: {temperature:.4f}")
+            
+            # Save temperature
+            scaler.save(f"{eval_dir}/temperature_{task_name}.json")
+            
+            # Calibrate probabilities
+            calibrated_probs = scaler.calibrate(logits)
+            metrics_dict["temperature"] = float(temperature)
+        except Exception as e:
+            print(f"  [WARN] Temperature scaling failed: {e}")
+
+        try:
+            roc = roc_auc_score(labels, calibrated_probs[:, 1])
+            pr_auc = average_precision_score(labels, calibrated_probs[:, 1])
             print(f"  ROC-AUC  : {roc:.4f}")
             print(f"  PR-AUC   : {pr_auc:.4f}")
             metrics_dict["roc_auc"] = float(roc)
             metrics_dict["pr_auc"] = float(pr_auc)
 
             # --- Optimal threshold search ---
-            opt_threshold, opt_info = find_optimal_threshold(labels, probs[:, 1], strategy="f1")
-            preds_opt = (probs[:, 1] >= opt_threshold).astype(int)
+            opt_threshold, opt_info = find_optimal_threshold(labels, calibrated_probs[:, 1], strategy="f1")
+            preds_opt = (calibrated_probs[:, 1] >= opt_threshold).astype(int)
             acc_opt = accuracy_score(labels, preds_opt)
             rec_opt = recall_score(labels, preds_opt, average="weighted", zero_division=0)
             f1_opt = f1_score(labels, preds_opt, average="weighted", zero_division=0)
@@ -137,8 +157,8 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
             metrics_dict["optimal_precision_per_class"] = prec_opt_pc.tolist()
 
             # Save ROC curve data for visualization
-            fpr, tpr, roc_thresholds = roc_curve(labels, probs[:, 1])
-            prec_curve, rec_curve, pr_thresholds = precision_recall_curve(labels, probs[:, 1])
+            fpr, tpr, roc_thresholds = roc_curve(labels, calibrated_probs[:, 1])
+            prec_curve, rec_curve, pr_thresholds = precision_recall_curve(labels, calibrated_probs[:, 1])
             metrics_dict["roc_curve"] = {"fpr": fpr.tolist(), "tpr": tpr.tolist()}
             metrics_dict["pr_curve"] = {"precision": prec_curve.tolist(), "recall": rec_curve.tolist()}
 
@@ -146,7 +166,7 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
             sweep_thresholds = np.linspace(0.05, 0.95, 50)
             sweep_f1, sweep_rec, sweep_prec = [], [], []
             for t in sweep_thresholds:
-                p = (probs[:, 1] >= t).astype(int)
+                p = (calibrated_probs[:, 1] >= t).astype(int)
                 sweep_f1.append(float(f1_score(labels, p, average="weighted", zero_division=0)))
                 sweep_rec.append(float(recall_score(labels, p, average="weighted", zero_division=0)))
                 sweep_prec.append(float(precision_score(labels, p, average="weighted", zero_division=0)))
@@ -250,17 +270,82 @@ def main():
 
     # Load or build encoder
     encoder_path = f"{ckpt_base}/encoder_frozen.keras"
-    if os.path.exists(encoder_path):
-        encoder = tf.keras.models.load_model(encoder_path)
-    else:
+    if not os.path.exists(encoder_path):
         # Fallback to old flat path for backward compatibility
         old_path = "./checkpoints/encoder_frozen.keras"
         if os.path.exists(old_path):
             print(f"[INFO] Falling back to legacy encoder path: {old_path}")
-            encoder = tf.keras.models.load_model(old_path)
+            encoder_path = old_path
         else:
-            print("[WARN] No frozen encoder found; using fresh encoder for demo.")
-            encoder = build_flow_encoder(input_dim=80)
+            encoder_path = None
+
+    if encoder_path:
+        import zipfile
+        if zipfile.is_zipfile(encoder_path):
+            print(f"Encoder Keras 3 zip format detected. Loading weights manually.")
+            import tempfile
+            import shutil
+            import h5py
+            temp_dir = tempfile.mkdtemp(dir=".")
+            try:
+                with zipfile.ZipFile(encoder_path, 'r') as zip_ref:
+                    weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+                    with h5py.File(weights_path, 'r') as f:
+                        input_dim = f['layers/dense/vars/0'].shape[0]
+                
+                encoder = build_flow_encoder(input_dim=input_dim)
+                
+                # Load weights manually
+                with zipfile.ZipFile(encoder_path, 'r') as zip_ref:
+                    weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+                    with h5py.File(weights_path, 'r') as f:
+                        layer_groups = {}
+                        layers_root = f['layers']
+                        for grp_name in layers_root.keys():
+                            vars_path = f"layers/{grp_name}/vars"
+                            if vars_path in f:
+                                name_attr = f[vars_path].attrs.get('name')
+                                if name_attr:
+                                    if isinstance(name_attr, bytes):
+                                        name_attr = name_attr.decode('utf-8')
+                                    layer_groups[name_attr] = vars_path
+                        
+                        for layer in encoder.layers:
+                            if not layer.weights:
+                                continue
+                            name = layer.name
+                            h5_group = layer_groups.get(name)
+                            if not h5_group:
+                                # Prefix match
+                                matched = False
+                                for attr_name, vars_path in layer_groups.items():
+                                    if name.split('_')[0] == attr_name.split('_')[0] and type(layer) == type(encoder.get_layer(attr_name)):
+                                        h5_group = vars_path
+                                        matched = True
+                                        break
+                                if not matched:
+                                    continue
+                                    
+                            weight_vals = []
+                            idx = 0
+                            while f"{h5_group}/{idx}" in f:
+                                weight_vals.append(f[f"{h5_group}/{idx}"][()])
+                                idx += 1
+                                
+                            if len(weight_vals) == len(layer.weights):
+                                layer.set_weights(weight_vals)
+                print("  Successfully loaded weights manually.")
+            except Exception as e:
+                print(f"[WARN] Failed to load Keras 3 encoder manually: {e}. Falling back to default loader.")
+                encoder = tf.keras.models.load_model(encoder_path)
+            finally:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+        else:
+            encoder = tf.keras.models.load_model(encoder_path)
+    else:
+        print("[WARN] No frozen encoder found; using fresh encoder for demo.")
+        encoder = build_flow_encoder(input_dim=80)
     encoder.trainable = False
     embed_dim = encoder.output_shape[-1]
 

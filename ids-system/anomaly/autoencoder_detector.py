@@ -104,9 +104,137 @@ class AutoencoderDetector:
     def load(self, path: str = None):
         """Load a previously trained autoencoder."""
         path = path or "./checkpoints/anomaly_ae.keras"
-        self.model = tf.keras.models.load_model(path)
-        threshold_path = path.replace(".keras", "_threshold.npy")
         import os
+        import zipfile
+        import tempfile
+        import shutil
+        import h5py
+        
+        if os.path.exists(path) and zipfile.is_zipfile(path):
+            print(f"Anomaly autoencoder Keras 3 zip format detected. Loading weights manually.")
+            try:
+                temp_dir = tempfile.mkdtemp(dir=".")
+                try:
+                    with zipfile.ZipFile(path, 'r') as zip_ref:
+                        weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+                        with h5py.File(weights_path, 'r') as f:
+                            # /layers/dense/vars/0 has shape (embed_dim, 128)
+                            embed_dim = f['layers/dense/vars/0'].shape[0]
+                            
+                            # Find ae_latent layer to get latent_dim
+                            latent_dim = self.latent_dim
+                            layers_root = f['layers']
+                            for grp_name in layers_root.keys():
+                                vars_path = f"layers/{grp_name}/vars"
+                                if vars_path in f:
+                                    name_attr = f[vars_path].attrs.get('name')
+                                    if name_attr:
+                                        if isinstance(name_attr, bytes):
+                                            name_attr = name_attr.decode('utf-8')
+                                        if name_attr == 'ae_latent':
+                                            latent_dim = f[f"{vars_path}/0"].shape[1]
+                                            break
+                    
+                    print(f"Detected autoencoder dimensions: embed_dim={embed_dim}, latent_dim={latent_dim}")
+                    self.embed_dim = embed_dim
+                    self.latent_dim = latent_dim
+                    self.model = self._build_autoencoder()
+                    
+                    # Manual weight loader
+                    with zipfile.ZipFile(path, 'r') as zip_ref:
+                        weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+                        with h5py.File(weights_path, 'r') as f:
+                            # 1. Parse all H5 layers and categorize them
+                            h5_layers = []
+                            layers_root = f['layers']
+                            for grp_name in layers_root.keys():
+                                vars_path = f"layers/{grp_name}/vars"
+                                if vars_path in f:
+                                    name_attr = f[vars_path].attrs.get('name')
+                                    if name_attr:
+                                        if isinstance(name_attr, bytes):
+                                            name_attr = name_attr.decode('utf-8')
+                                        
+                                        weight_vals = []
+                                        idx = 0
+                                        while f"{vars_path}/{idx}" in f:
+                                            weight_vals.append(f[f"{vars_path}/{idx}"][()])
+                                            idx += 1
+                                        
+                                        h5_layers.append({
+                                            'grp_name': grp_name,
+                                            'vars_path': vars_path,
+                                            'saved_name': name_attr,
+                                            'weights': weight_vals,
+                                            'count': len(weight_vals)
+                                        })
+                            
+                            # 2. Build mapping using exact names and types/orders
+                            custom_names_in_h5 = {}
+                            unnamed_dense_in_h5 = []
+                            unnamed_bn_in_h5 = []
+                            
+                            for h5_layer in h5_layers:
+                                saved_name = h5_layer['saved_name']
+                                is_default = (
+                                    saved_name.startswith("dense") or 
+                                    saved_name.startswith("batch_normalization") or
+                                    saved_name.startswith("dropout") or
+                                    saved_name.startswith("input")
+                                )
+                                if not is_default:
+                                    custom_names_in_h5[saved_name] = h5_layer
+                                else:
+                                    if h5_layer['count'] == 2:  # Dense
+                                        unnamed_dense_in_h5.append(h5_layer)
+                                    elif h5_layer['count'] == 4:  # BatchNormalization
+                                        unnamed_bn_in_h5.append(h5_layer)
+                            
+                            keras2_dense_unnamed = []
+                            keras2_bn_unnamed = []
+                            
+                            for layer in self.model.layers:
+                                if not layer.weights:
+                                    continue
+                                name = layer.name
+                                is_custom = name in ['ae_latent', 'ae_reconstruction', 'embedding']
+                                if is_custom:
+                                    h5_layer = custom_names_in_h5.get(name)
+                                    if h5_layer:
+                                        layer.set_weights(h5_layer['weights'])
+                                        print(f"  Matched custom layer '{name}' -> H5 group '{h5_layer['grp_name']}'")
+                                    else:
+                                        print(f"  [ERROR] Custom layer '{name}' not found in weights file.")
+                                else:
+                                    if len(layer.weights) == 2:
+                                        keras2_dense_unnamed.append(layer)
+                                    elif len(layer.weights) == 4:
+                                        keras2_bn_unnamed.append(layer)
+                            
+                            # Match unnamed Dense layers by order
+                            for i, layer in enumerate(keras2_dense_unnamed):
+                                if i < len(unnamed_dense_in_h5):
+                                    h5_layer = unnamed_dense_in_h5[i]
+                                    layer.set_weights(h5_layer['weights'])
+                                    print(f"  Matched unnamed Dense layer #{i} '{layer.name}' -> H5 group '{h5_layer['grp_name']}'")
+                                    
+                            # Match unnamed BN layers by order
+                            for i, layer in enumerate(keras2_bn_unnamed):
+                                if i < len(unnamed_bn_in_h5):
+                                    h5_layer = unnamed_bn_in_h5[i]
+                                    layer.set_weights(h5_layer['weights'])
+                                    print(f"  Matched unnamed BN layer #{i} '{layer.name}' -> H5 group '{h5_layer['grp_name']}'")
+                    print("  Successfully loaded weights manually.")
+                finally:
+                    if os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir)
+            except Exception as e:
+                print(f"  [ERROR] Keras 3 manual load failed: {e}. Falling back to standard load.")
+                self.model = tf.keras.models.load_model(path)
+        else:
+            self.model = tf.keras.models.load_model(path)
+            
+        threshold_path = path.replace(".keras", "_threshold.npy")
         if os.path.exists(threshold_path):
             self.threshold = float(np.load(threshold_path)[0])
         print(f"Anomaly autoencoder loaded from {path} (threshold={self.threshold:.6f})")

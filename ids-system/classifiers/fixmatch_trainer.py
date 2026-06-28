@@ -19,7 +19,7 @@ class FixMatchTrainer:
                  lr: float = 0.03, confidence_threshold: float = 0.90,
                  class_weights: dict = None, focal_gamma: float = 2.0,
                  log_dir: str = None, ckpt_dir: str = None,
-                 clip_norm: float = 1.0, max_class_weight: float = 10.0):
+                 clip_norm: float = 1.0, max_class_weight: float = 50.0):
         self.encoder = encoder
         self.head = head
         self.gpm = gpm
@@ -78,7 +78,16 @@ class FixMatchTrainer:
         
         max_probs = tf.reduce_max(probs_weak, axis=-1)
         pseudo_labels = tf.argmax(probs_weak, axis=-1)
-        mask = tf.cast(max_probs >= self.confidence_threshold, tf.float32)
+        
+        # Class-aware thresholding: strict for majority (class 0), lenient for minority (class 1)
+        # This prevents the biased pseudo-label feedback loop from reinforcing majority-class dominance
+        threshold_per_class = tf.constant(
+            [self.confidence_threshold + 0.05, self.confidence_threshold - 0.20],
+            dtype=tf.float32
+        )
+        per_sample_threshold = tf.gather(threshold_per_class,
+                                         tf.cast(pseudo_labels, tf.int32))
+        mask = tf.cast(max_probs >= per_sample_threshold, tf.float32)
         
         with tf.GradientTape() as tape:
             # Supervised path — focal loss with class weighting
@@ -144,12 +153,16 @@ class FixMatchTrainer:
         }
 
     def train(self, labeled_ds: tf.data.Dataset, unlabeled_ds: tf.data.Dataset, 
-              task_name: str, epochs: int = 10, lambda_u: float = 1.0):
+              task_name: str, epochs: int = 10, lambda_u: float = 1.0,
+              warmup_epochs: int = 3):
         """
         Training loop for a specific task.
+        During the first `warmup_epochs`, pseudo-label loss is disabled (lambda_u=0)
+        to let the head learn a reasonable decision boundary from labeled data first.
         Returns training history dict for visualization.
         """
-        print(f"Starting FixMatch training for task: {task_name}")
+        print(f"Starting FixMatch training for task: {task_name} "
+              f"(warmup={warmup_epochs} epochs, then lambda_u={lambda_u})")
         log_path = self.log_dir or f'./logs/task_{task_name}'
         writer = tf.summary.create_file_writer(log_path)
         ckpt_path = self.ckpt_dir or f'./checkpoints/{task_name}'
@@ -175,6 +188,9 @@ class FixMatchTrainer:
         history = {"loss_s": [], "loss_u": [], "total_loss": [], "mask_rate": []}
         
         for epoch in range(epochs):
+            # Disable pseudo-labels during warmup to prevent biased feedback loop
+            effective_lambda = 0.0 if epoch < warmup_epochs else lambda_u
+
             metrics = {"loss_s": 0.0, "loss_u": 0.0, "total_loss": 0.0, "mask_rate": 0.0}
             steps = 0
             
@@ -183,7 +199,7 @@ class FixMatchTrainer:
                 # Get a batch from unlabeled stream
                 x_u_weak, x_u_strong = next(unlabeled_iter)
                 
-                step_metrics = self.train_step(x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u)
+                step_metrics = self.train_step(x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, effective_lambda)
                 
                 # Check for NaNs before accumulating
                 is_nan = bool(step_metrics.get("is_nan", False))

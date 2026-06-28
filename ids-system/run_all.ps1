@@ -30,8 +30,12 @@ foreach ($dataset in $datasets) {
 
     if ($dataset -eq "unsw") {
         # 1. SSL Pretraining
-        Write-Host "[1/4] Running SSL Pretraining..." -ForegroundColor Yellow
-        python training/train_ssl.py --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" --label_col "label" --epochs $ssl_epochs --dataset_name unsw
+        if (Test-Path "checkpoints/unsw/encoder_frozen.keras") {
+            Write-Host "[1/4] Frozen encoder already exists. Skipping SSL Pretraining." -ForegroundColor Green
+        } else {
+            Write-Host "[1/4] Running SSL Pretraining..." -ForegroundColor Yellow
+            python training/train_ssl.py --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" --label_col "label" --epochs $ssl_epochs --dataset_name unsw
+        }
 
         # 2. Train, Evaluate & Visualize Intrusion
         Write-Host "[2/4] Running Intrusion Task..." -ForegroundColor Yellow
@@ -53,8 +57,12 @@ foreach ($dataset in $datasets) {
 
     } elseif ($dataset -eq "kddcup99") {
         # 1. SSL Pretraining
-        Write-Host "[1/4] Running SSL Pretraining..." -ForegroundColor Yellow
-        python training/train_ssl.py --dataset kddcup99 --data_path "../KDDCUP99" --label_col "Label" --epochs $ssl_epochs --dataset_name kddcup99
+        if (Test-Path "checkpoints/kddcup99/encoder_frozen.keras") {
+            Write-Host "[1/4] Frozen encoder already exists. Skipping SSL Pretraining." -ForegroundColor Green
+        } else {
+            Write-Host "[1/4] Running SSL Pretraining..." -ForegroundColor Yellow
+            python training/train_ssl.py --dataset kddcup99 --data_path "../KDDCUP99" --label_col "Label" --epochs $ssl_epochs --dataset_name kddcup99
+        }
 
         # 2. Train, Evaluate & Visualize Intrusion
         Write-Host "[2/4] Running Intrusion Task..." -ForegroundColor Yellow
@@ -76,8 +84,12 @@ foreach ($dataset in $datasets) {
 
     } elseif ($dataset -eq "cicids2017") {
         # 1. SSL Pretraining
-        Write-Host "[1/4] Running SSL Pretraining..." -ForegroundColor Yellow
-        python training/train_ssl.py --dataset cicids2017 --data_path "../CICIDS2017" --label_col "Label" --epochs $ssl_epochs --dataset_name cicids2017
+        if (Test-Path "checkpoints/cicids2017/encoder_frozen.keras") {
+            Write-Host "[1/4] Frozen encoder already exists. Skipping SSL Pretraining." -ForegroundColor Green
+        } else {
+            Write-Host "[1/4] Running SSL Pretraining..." -ForegroundColor Yellow
+            python training/train_ssl.py --dataset cicids2017 --data_path "../CICIDS2017" --label_col "Label" --epochs $ssl_epochs --dataset_name cicids2017
+        }
 
         # 2. Train, Evaluate & Visualize Intrusion
         Write-Host "[2/4] Running Intrusion Task..." -ForegroundColor Yellow

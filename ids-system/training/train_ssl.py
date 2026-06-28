@@ -20,7 +20,7 @@ class SSLPretrainer:
         self.encoder = build_flow_encoder(input_dim, hidden_dim, embed_dim)
         self.projector = build_projection_head(embed_dim, proj_dim)
         self.temperature = 0.1
-        self.optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4, weight_decay=1e-4)
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
         
         self.trainable_vars = self.encoder.trainable_variables + self.projector.trainable_variables
         self.log_dir = log_dir or './logs/ssl'
