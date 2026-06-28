@@ -73,3 +73,5 @@ IEEE_Research_Report_sample.md
 CICIDS2017
 paper_artifacts
 IDSArchitectureDashboard_SSSL.jsx
+ids-system/rerun_failed.ps1
+run_all.ps1
