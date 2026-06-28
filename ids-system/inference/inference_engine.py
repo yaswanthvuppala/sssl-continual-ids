@@ -39,15 +39,28 @@ class IDSInferenceEngine:
         encoder: tf.keras.Model,
         heads: Dict[str, tf.keras.Model],
         anomaly_detector,
-        attack_threshold: float = 0.80,
+        attack_thresholds: Optional[Dict[str, float]] = None,
+        default_threshold: float = 0.5,
         anomaly_threshold: float = 0.65,
+        temperatures: Optional[Dict[str, float]] = None,
+        attack_threshold: Optional[float] = None,
     ):
         self.encoder = encoder
         self.encoder.trainable = False
         self.heads = heads
         self.anomaly = anomaly_detector
-        self.attack_threshold = attack_threshold
+        self.default_threshold = default_threshold
+        
+        # Support either per-head dict or legacy single parameter
+        if attack_thresholds is not None:
+            self.attack_thresholds = attack_thresholds
+        elif attack_threshold is not None:
+            self.attack_thresholds = {name: attack_threshold for name in heads.keys()}
+        else:
+            self.attack_thresholds = {name: 0.80 for name in heads.keys()}
+            
         self.anomaly_threshold = anomaly_threshold
+        self.temperatures = temperatures or {}
 
     def encode(self, x: np.ndarray) -> np.ndarray:
         """Encodes raw features through the frozen SSL encoder."""
@@ -63,34 +76,59 @@ class IDSInferenceEngine:
         embedding = self.encode(flow_features)
 
         # --- Run all classifier heads ---
-        best_conf = 0.0
-        best_type: Optional[str] = None
+        best_margin = -float('inf')
+        selected_type: Optional[str] = None
+        selected_conf = 0.0
+        
+        max_raw_conf = 0.0
+        max_raw_type: Optional[str] = None
+
         for attack_name, head in self.heads.items():
             logits = head(tf.constant(embedding, dtype=tf.float32), training=False)
+            
+            # Apply Temperature Scaling if temperature is defined
+            if self.temperatures and attack_name in self.temperatures:
+                T = self.temperatures[attack_name]
+                if T > 0:
+                    logits = logits / T
+                    
             probs = tf.nn.softmax(logits, axis=-1).numpy()
             # Class 1 is always the "attack" class in binary heads
             attack_prob = float(probs[0, 1]) if probs.shape[-1] == 2 else float(np.max(probs[0]))
-            if attack_prob > best_conf:
-                best_conf = attack_prob
-                best_type = attack_name
+            
+            if attack_prob > max_raw_conf:
+                max_raw_conf = attack_prob
+                max_raw_type = attack_name
+                
+            threshold = self.attack_thresholds.get(attack_name, self.default_threshold)
+            margin = attack_prob - threshold
+            
+            if attack_prob >= threshold:
+                if margin > best_margin:
+                    best_margin = margin
+                    selected_type = attack_name
+                    selected_conf = attack_prob
 
         # --- Anomaly scoring ---
         anomaly_score = self.anomaly.score(embedding[0])
 
         # --- Decision logic ---
-        if best_conf >= self.attack_threshold:
-            label = best_type
+        if selected_type is not None:
+            label = selected_type
+            confidence = selected_conf
         elif anomaly_score >= self.anomaly_threshold:
             label = "zero-day / unknown"
+            confidence = max_raw_conf
         else:
             label = None  # benign
+            confidence = max_raw_conf
 
         severity = compute_severity(anomaly_score)
 
         return IDSAlert(
             flow_id=flow_id,
             attack_type=label,
-            confidence=best_conf,
+            confidence=confidence,
             anomaly_score=anomaly_score,
             severity=severity,
         )
