@@ -116,7 +116,9 @@ class AutoencoderDetector:
                 temp_dir = tempfile.mkdtemp(dir=".")
                 try:
                     with zipfile.ZipFile(path, 'r') as zip_ref:
-                        weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+                        weights_path = os.path.join(temp_dir, "model.weights.h5")
+                        with zip_ref.open("model.weights.h5") as src, open(weights_path, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
                         with h5py.File(weights_path, 'r') as f:
                             # /layers/dense/vars/0 has shape (embed_dim, 128)
                             embed_dim = f['layers/dense/vars/0'].shape[0]
@@ -142,7 +144,9 @@ class AutoencoderDetector:
                     
                     # Manual weight loader
                     with zipfile.ZipFile(path, 'r') as zip_ref:
-                        weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+                        weights_path = os.path.join(temp_dir, "model.weights.h5")
+                        with zip_ref.open("model.weights.h5") as src, open(weights_path, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
                         with h5py.File(weights_path, 'r') as f:
                             # 1. Parse all H5 layers and categorize them
                             h5_layers = []

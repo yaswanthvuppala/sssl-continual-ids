@@ -1,6 +1,9 @@
 import os
 import sys
 import argparse
+import shutil
+import tempfile
+import zipfile
 import tensorflow as tf
 import numpy as np
 
@@ -16,6 +19,15 @@ from classifiers.fixmatch_trainer import FixMatchTrainer
 from gpm.gpm import GradientProjectionMemory
 from gpm.memory_bank import MemoryBank
 
+
+def copy_keras_weights_from_zip(zip_path: str, temp_dir: str) -> str:
+    weights_path = os.path.join(temp_dir, "model.weights.h5")
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        with zip_ref.open("model.weights.h5") as src, open(weights_path, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+    return weights_path
+
+
 def load_keras3_weights_manually(model, zip_path: str):
     """Loads Keras 3 weights manually and robustly using type-and-order matching."""
     import zipfile
@@ -26,7 +38,7 @@ def load_keras3_weights_manually(model, zip_path: str):
     temp_dir = tempfile.mkdtemp(dir=".")
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+            weights_path = copy_keras_weights_from_zip(zip_path, temp_dir)
             with h5py.File(weights_path, 'r') as f:
                 # 1. Parse all H5 layers and categorize them
                 h5_layers = []
@@ -127,7 +139,7 @@ def load_frozen_encoder(path: str = "./checkpoints/encoder_frozen.keras") -> tf.
         temp_dir = tempfile.mkdtemp(dir=".")
         try:
             with zipfile.ZipFile(path, 'r') as zip_ref:
-                weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+                weights_path = copy_keras_weights_from_zip(path, temp_dir)
                 with h5py.File(weights_path, 'r') as f:
                     input_dim = f['layers/dense/vars/0'].shape[0]
             
@@ -335,12 +347,14 @@ def main():
     
     # Create datasets
     if args.balanced:
+        if len(class_counts) < 2:
+            raise ValueError("Balanced batching requires both classes to be present.")
         print(f"[INFO] Using class-balanced batching (50/50 per batch)")
         labeled_ds = make_balanced_dataset(X_l, y_l_binary, batch_size=args.batch_size)
         # For balanced datasets, set a fixed number of steps per epoch
         # since the dataset is infinite (uses .repeat() internally)
         minority_count = int(min(class_counts))
-        steps_per_epoch = min(2 * minority_count // args.batch_size, 2000)
+        steps_per_epoch = max(1, min(2 * minority_count // args.batch_size, 2000))
         labeled_ds = labeled_ds.take(steps_per_epoch)
         print(f"[INFO] Steps per epoch (balanced): {steps_per_epoch}")
     else:
