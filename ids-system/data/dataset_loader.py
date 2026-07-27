@@ -136,10 +136,12 @@ class FlowDatasetLoader:
             df = self._load_kddcup99(split)
         elif dataset_key in {"cicids2017", "cic2017"}:
             df = self._load_cicids2017(split, test_size, random_state)
+        elif dataset_key in {"unsw", "unswnb15", "unsw15"}:
+            df = self._load_unsw(split)
         else:
             raise ValueError(
                 f"Unsupported dataset '{dataset}'. "
-                "Supported datasets: cicids2017, kddcup99."
+                "Supported datasets: cicids2017, kddcup99, unsw."
             )
 
         self._validate_label_column(df, label_col)
@@ -148,6 +150,38 @@ class FlowDatasetLoader:
             f"{len(df.columns):,} columns"
         )
         return df
+
+    def _load_unsw(self, split: str) -> pd.DataFrame:
+        base = Path(self.data_path)
+        filename = "UNSW_NB15_training-set.csv" if split == "train" else "UNSW_NB15_testing-set.csv"
+        candidates = [
+            base / filename,
+            base / "UNSW_NB15" / filename,
+            Path("../IDS-UNSW_NB") / filename,
+        ]
+        filepath = None
+        for candidate in candidates:
+            if candidate.is_file():
+                filepath = candidate
+                break
+        if filepath is None:
+            raise FileNotFoundError(f"Could not find UNSW-NB15 {split} file under {base}")
+
+        print(f"Loading UNSW-NB15 {split} data from {filepath}...")
+        df = pd.read_csv(filepath)
+        df.columns = df.columns.str.strip()
+
+        label_col = "label" if "label" in df.columns else "Label"
+        attack_cat_col = "attack_cat" if "attack_cat" in df.columns else "AttackCategory"
+
+        if label_col in df.columns:
+            df["Label"] = np.where(df[label_col].astype(str).str.strip().isin(["0", "normal", "Normal"]), "normal", "attack")
+        if attack_cat_col in df.columns:
+            df["AttackCategory"] = df[attack_cat_col].astype(str).str.strip().str.lower()
+            df["AttackLabel"] = df["AttackCategory"]
+
+        return df
+
 
     def _load_kddcup99(self, split: str) -> pd.DataFrame:
         filepath = self._resolve_kdd_path(split)
