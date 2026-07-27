@@ -32,31 +32,33 @@ class MixMatchTrainer:
 
     def _sharpen(self, probs: tf.Tensor) -> tf.Tensor:
         """Temperature sharpening of probability distribution."""
-        p = probs ** (1.0 / self.temperature)
-        return p / tf.reduce_sum(p, axis=-1, keepdims=True)
+        temp = max(self.temperature, 1e-4)
+        p = tf.pow(tf.maximum(probs, 1e-7), 1.0 / temp)
+        return p / tf.maximum(tf.reduce_sum(p, axis=-1, keepdims=True), 1e-7)
 
-    def _mixup(self, x1, x2, y1, y2):
+    def _mixup(self, x1: tf.Tensor, x2: tf.Tensor, y1: tf.Tensor, y2: tf.Tensor):
         """MixUp two batches of (features, labels)."""
         lam = np.random.beta(self.alpha, self.alpha)
         lam = max(lam, 1.0 - lam)  # ensure lam >= 0.5
-        x_mix = lam * x1 + (1.0 - lam) * x2
-        y_mix = lam * y1 + (1.0 - lam) * y2
+        lam_tf = tf.constant(lam, dtype=tf.float32)
+        x_mix = lam_tf * x1 + (1.0 - lam_tf) * x2
+        y_mix = lam_tf * y1 + (1.0 - lam_tf) * y2
         return x_mix, y_mix
 
     @tf.function
-    def train_step(self, emb_l, y_l_onehot, emb_u, pseudo_labels):
-        """Single MixMatch training step on pre-computed embeddings."""
+    def train_step(self, emb_l_mix, y_l_mix, emb_u_mix, pseudo_u_mix):
+        """Single MixMatch training step on pre-computed mixed embeddings."""
         with tf.GradientTape() as tape:
-            # MixUp labeled
-            logits_l = self.head(emb_l, training=True)
+            # Labeled MixUp loss — cross entropy on mixed target
+            logits_l = self.head(emb_l_mix, training=True)
             loss_s = tf.reduce_mean(
-                tf.keras.losses.categorical_crossentropy(y_l_onehot, logits_l, from_logits=True)
+                tf.keras.losses.categorical_crossentropy(y_l_mix, logits_l, from_logits=True)
             )
 
-            # MixUp unlabeled — MSE loss on sharpened pseudo-labels
-            logits_u = self.head(emb_u, training=True)
+            # Unlabeled MixUp loss — MSE on mixed sharpened pseudo-labels
+            logits_u = self.head(emb_u_mix, training=True)
             probs_u = tf.nn.softmax(logits_u)
-            loss_u = tf.reduce_mean(tf.square(probs_u - pseudo_labels))
+            loss_u = tf.reduce_mean(tf.square(probs_u - pseudo_u_mix))
 
             total_loss = loss_s + self.lambda_u * loss_u
 
@@ -95,7 +97,24 @@ class MixMatchTrainer:
                 probs_u = tf.nn.softmax(self.head(emb_u, training=False))
                 pseudo = self._sharpen(probs_u)
 
-                step_metrics = self.train_step(emb_l, y_l_onehot, emb_u, pseudo)
+                # MixUp: Combine labeled and unlabeled pools, shuffle, and apply MixUp
+                all_emb = tf.concat([emb_l, emb_u], axis=0)
+                all_targets = tf.concat([y_l_onehot, pseudo], axis=0)
+                indices = tf.random.shuffle(tf.range(tf.shape(all_emb)[0]))
+                all_emb_shuffled = tf.gather(all_emb, indices)
+                all_targets_shuffled = tf.gather(all_targets, indices)
+
+                n_labeled = tf.shape(emb_l)[0]
+                emb_l_mix, y_l_mix = self._mixup(
+                    emb_l, all_emb_shuffled[:n_labeled],
+                    y_l_onehot, all_targets_shuffled[:n_labeled]
+                )
+                emb_u_mix, pseudo_u_mix = self._mixup(
+                    emb_u, all_emb_shuffled[n_labeled:],
+                    pseudo, all_targets_shuffled[n_labeled:]
+                )
+
+                step_metrics = self.train_step(emb_l_mix, y_l_mix, emb_u_mix, pseudo_u_mix)
                 for k, v in step_metrics.items():
                     metrics[k] += float(v)
                 steps += 1
@@ -114,3 +133,4 @@ class MixMatchTrainer:
 
         print(f"MixMatch task {task_name} complete.")
         return avg_metrics
+
