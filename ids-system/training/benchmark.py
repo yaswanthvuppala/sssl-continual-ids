@@ -99,10 +99,13 @@ def main():
     classes = list(preprocessor.get_classes())
     print(f"  Dataset classes: {classes}")
 
+    results = {}
+
     tasks = [
         ("dos", build_dos_head, "DoS"),
         ("port_scan", build_scan_head, "PortScan"),
     ]
+
 
     for task_name, build_fn, target_label in tasks:
         target_class = classes.index(target_label) if target_label in classes else 1
