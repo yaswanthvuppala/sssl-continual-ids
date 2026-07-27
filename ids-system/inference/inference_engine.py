@@ -134,11 +134,72 @@ class IDSInferenceEngine:
         )
 
     def score_batch(self, flow_features: np.ndarray, flow_ids: Optional[List[str]] = None) -> List[IDSAlert]:
-        """Scores a batch of flows."""
+        """Scores a batch of flows in a single batched GPU forward pass."""
+        if len(flow_features) == 0:
+            return []
         if flow_ids is None:
             flow_ids = [f"flow_{i}" for i in range(len(flow_features))]
+
+        # Single batched encoder pass
+        embeddings = self.encode(flow_features)  # (N, embed_dim)
+        emb_tf = tf.constant(embeddings, dtype=tf.float32)
+
+        n_samples = len(flow_features)
+        best_margins = np.full(n_samples, -np.inf)
+        selected_types: List[Optional[str]] = [None] * n_samples
+        selected_confs = np.zeros(n_samples, dtype=np.float32)
+        max_raw_confs = np.zeros(n_samples, dtype=np.float32)
+
+        # Batched evaluation per classifier head
+        for attack_name, head in self.heads.items():
+            logits = head(emb_tf, training=False)
+            if self.temperatures and attack_name in self.temperatures:
+                T = self.temperatures[attack_name]
+                if T > 0:
+                    logits = logits / T
+            probs = tf.nn.softmax(logits, axis=-1).numpy()
+            attack_probs = probs[:, 1] if probs.shape[-1] == 2 else np.max(probs, axis=-1)
+
+            threshold = self.attack_thresholds.get(attack_name, self.default_threshold)
+            margins = attack_probs - threshold
+
+            max_raw_confs = np.maximum(max_raw_confs, attack_probs)
+
+            # Update best margin per sample
+            for i in range(n_samples):
+                if attack_probs[i] >= threshold and margins[i] > best_margins[i]:
+                    best_margins[i] = margins[i]
+                    selected_types[i] = attack_name
+                    selected_confs[i] = float(attack_probs[i])
+
+        # Batched anomaly scoring
+        anomaly_scores = self.anomaly.score(embeddings)
+        if isinstance(anomaly_scores, float):
+            anomaly_scores = np.array([anomaly_scores])
+
         alerts = []
-        for i in range(len(flow_features)):
-            alert = self.score_single(flow_features[i], flow_ids[i])
-            alerts.append(alert)
+        for i in range(n_samples):
+            stype = selected_types[i]
+            anom_score = float(anomaly_scores[i])
+            if stype is not None:
+                label = stype
+                conf = float(selected_confs[i])
+            elif anom_score >= self.anomaly_threshold:
+                label = "zero-day / unknown"
+                conf = float(max_raw_confs[i])
+            else:
+                label = None
+                conf = float(max_raw_confs[i])
+
+            severity = compute_severity(anom_score)
+            alerts.append(
+                IDSAlert(
+                    flow_id=flow_ids[i],
+                    attack_type=label,
+                    confidence=conf,
+                    anomaly_score=anom_score,
+                    severity=severity,
+                )
+            )
         return alerts
+

@@ -79,15 +79,15 @@ class FixMatchTrainer:
         max_probs = tf.reduce_max(probs_weak, axis=-1)
         pseudo_labels = tf.argmax(probs_weak, axis=-1)
         
-        # Class-aware thresholding: strict for majority (class 0), lenient for minority (class 1)
-        # This prevents the biased pseudo-label feedback loop from reinforcing majority-class dominance
-        threshold_per_class = tf.constant(
-            [self.confidence_threshold + 0.05, self.confidence_threshold - 0.20],
-            dtype=tf.float32
-        )
-        per_sample_threshold = tf.gather(threshold_per_class,
-                                         tf.cast(pseudo_labels, tf.int32))
+        # Class-aware thresholding: strict for majority (class 0), lenient for minority/attack classes
+        # Dynamically matches the head's number of output classes
+        num_classes = tf.shape(logits_weak)[-1]
+        thresh_benign = tf.fill([1], self.confidence_threshold + 0.05)
+        thresh_attack = tf.fill([num_classes - 1], self.confidence_threshold - 0.20)
+        threshold_per_class = tf.concat([thresh_benign, thresh_attack], axis=0)
+        per_sample_threshold = tf.gather(threshold_per_class, tf.cast(pseudo_labels, tf.int32))
         mask = tf.cast(max_probs >= per_sample_threshold, tf.float32)
+
         
         with tf.GradientTape() as tape:
             # Supervised path — focal loss with class weighting

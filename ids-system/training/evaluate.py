@@ -23,7 +23,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from data.dataset_loader import FlowDatasetLoader
 from data.preprocessing import FlowPreprocessor
-from training.train_task import build_task_head, make_task_labels
+from training.train_task import build_task_head, make_task_labels, copy_keras_weights_from_zip
 
 
 def find_optimal_threshold(labels, probs_positive, strategy="f1"):
@@ -254,6 +254,7 @@ def main():
     parser.add_argument("--dataset_name", type=str, default="default",
                         help="Dataset identifier for scoping output paths")
     args = parser.parse_args()
+    allow_demo = not (args.dataset or args.test_csv)
 
     # Resolve dataset-scoped base paths
     ds = args.dataset_name
@@ -289,7 +290,7 @@ def main():
             temp_dir = tempfile.mkdtemp(dir=".")
             try:
                 with zipfile.ZipFile(encoder_path, 'r') as zip_ref:
-                    weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+                    weights_path = copy_keras_weights_from_zip(encoder_path, temp_dir)
                     with h5py.File(weights_path, 'r') as f:
                         input_dim = f['layers/dense/vars/0'].shape[0]
                 
@@ -297,7 +298,7 @@ def main():
                 
                 # Load weights manually
                 with zipfile.ZipFile(encoder_path, 'r') as zip_ref:
-                    weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+                    weights_path = copy_keras_weights_from_zip(encoder_path, temp_dir)
                     with h5py.File(weights_path, 'r') as f:
                         layer_groups = {}
                         layers_root = f['layers']
@@ -344,6 +345,8 @@ def main():
         else:
             encoder = tf.keras.models.load_model(encoder_path)
     else:
+        if not allow_demo:
+            raise FileNotFoundError(f"Frozen encoder not found at {ckpt_base}/encoder_frozen.keras. Run SSL training first.")
         print("[WARN] No frozen encoder found; using fresh encoder for demo.")
         encoder = build_flow_encoder(input_dim=80)
     encoder.trainable = False
@@ -402,6 +405,8 @@ def main():
         if ckpt:
             tf.train.Checkpoint(head=head).restore(ckpt).expect_partial()
         else:
+            if not allow_demo:
+                raise FileNotFoundError(f"No checkpoint for {task_name}. Train the task head first.")
             print(f"[WARN] No checkpoint for {task_name}; using random weights.")
 
         binary_labels = make_task_labels(task_name, labels_raw, preprocessor.get_classes())

@@ -96,15 +96,20 @@ def main():
     gpm = GradientProjectionMemory(threshold=0.97, memory_bank=memory_bank)
     loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
+    classes = list(preprocessor.get_classes())
+    print(f"  Dataset classes: {classes}")
+
     results = {}
 
     tasks = [
-        ("dos", build_dos_head, 1),
-        ("port_scan", build_scan_head, 2),
+        ("dos", build_dos_head, "DoS"),
+        ("port_scan", build_scan_head, "PortScan"),
     ]
 
-    for task_name, build_fn, target_class in tasks:
-        print(f"\n[4/6] Training task: {task_name} ({TASK_EPOCHS} epochs)...")
+
+    for task_name, build_fn, target_label in tasks:
+        target_class = classes.index(target_label) if target_label in classes else 1
+        print(f"\n[4/6] Training task: {task_name} (target='{target_label}', class_idx={target_class}) ({TASK_EPOCHS} epochs)...")
         head = build_fn(embed_dim=EMBED_DIM)
         y_binary = (y_labeled == target_class).astype(np.int32)
 
@@ -113,6 +118,7 @@ def main():
 
         trainer = FixMatchTrainer(encoder=encoder, head=head, gpm=gpm, lr=0.03)
         trainer.train(labeled_ds, unlabeled_ds, task_name=task_name, epochs=TASK_EPOCHS)
+
 
         # Capture GPM basis
         class _CombinedModel(tf.keras.Model):
