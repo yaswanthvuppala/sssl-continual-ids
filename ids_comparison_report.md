@@ -11,38 +11,38 @@ This report presents a thorough performance comparison focusing on the **SSSL_Ba
 
 ## 2. Quantitative Performance Metric Comparison
 
-Below is the comparative performance metrics across three major intrusion detection datasets, updated with all latest evaluation metrics.
+Below are the comparative performance metrics across three major intrusion detection datasets. SSSL_Based_IDS values are from the latest run artifacts in `ids-system/logs/<dataset>/eval/metrics_*.json` dated **2026-07-09** and use the default decision threshold unless noted.
 
 ### A. KDDCUP99 Dataset Performance
 | Metric | SPIDER Model | CITADEL Model | SSSL_Based_IDS (Intrusion) | SSSL_Based_IDS (DoS) | SSSL_Based_IDS (Port Scan) |
 |---|---|---|---|---|---|
-| **Accuracy** | **0.9881** | 0.7805 | 0.9219 | 0.9784 | 0.8606 |
-| **Precision** | **0.9990** | 0.7932 | 0.9418 | 0.9792 | 0.9848 |
-| **Recall** | 0.9861 | 0.8034 | 0.9219 | 0.9784 | 0.8606 |
-| **F1-Score** | **0.9925** | 0.7982 | 0.9262 | 0.9786 | 0.9136 |
-| **ROC-AUC** | **0.9978** | N/A | 0.9704 | 0.9789 | 0.9330 |
-| **PR-AUC** | **0.9980** | 0.7216 | 0.8286 | 0.9936 | 0.4342 |
+| **Accuracy** | **0.9881** | 0.7805 | 0.9253 | 0.9772 | 0.8628 |
+| **Precision** | **0.9990** | 0.7932 | 0.9432 | 0.9785 | 0.9838 |
+| **Recall** | **0.9861** | 0.8034 | 0.9253 | 0.9772 | 0.8628 |
+| **F1-Score** | **0.9925** | 0.7982 | 0.9292 | 0.9775 | 0.9149 |
+| **ROC-AUC** | **0.9978** | N/A | 0.9562 | 0.9870 | 0.9513 |
+| **PR-AUC** | **0.9980** | 0.7216 | 0.7497 | 0.9959 | 0.6378 |
 | **BWT (Forgetting)** | ~0.00% | -12.41% | N/A | N/A | N/A |
 
 ### B. CICIDS2017 Dataset Performance
 | Metric | SPIDER Model | CITADEL Model | SSSL_Based_IDS (Intrusion) | SSSL_Based_IDS (DoS) | SSSL_Based_IDS (Port Scan) |
 |---|---|---|---|---|---|
-| **Accuracy** | 0.8629 | 0.6424 | 0.8814 | **0.9863** | **0.9837** |
-| **Precision** | 0.9798 | 0.4991 | 0.8965 | 0.9864 | **0.9873** |
-| **Recall** | 0.2994 | 0.7585 | 0.8814 | **0.9863** | **0.9837** |
-| **F1-Score** | 0.4586 | 0.6021 | 0.8601 | **0.9861** | **0.9847** |
-| **ROC-AUC** | 0.9644 | N/A | 0.8363 | **0.9990** | **0.9982** |
-| **PR-AUC** | 0.9002 | 0.4029 | 0.9399 | **0.9938** | **0.9679** |
+| **Accuracy** | 0.8629 | 0.6424 | 0.8789 | **0.9576** | 0.9439 |
+| **Precision** | **0.9798** | 0.4991 | 0.8939 | 0.9567 | 0.8909 |
+| **Recall** | 0.2994 | 0.7585 | 0.8789 | **0.9576** | 0.9439 |
+| **F1-Score** | 0.4586 | 0.6021 | 0.8566 | **0.9555** | 0.9166 |
+| **ROC-AUC** | **0.9644** | N/A | 0.8307 | 0.9191 | 0.7851 |
+| **PR-AUC** | 0.9002 | 0.4029 | **0.9374** | 0.8603 | 0.1217 |
 
 ### C. UNSW-NB15 Dataset Performance
 | Metric | SPIDER Model | CITADEL Model | SSSL_Based_IDS (Intrusion) | SSSL_Based_IDS (DoS) | SSSL_Based_IDS (Port Scan) |
 |---|---|---|---|---|---|
-| **Accuracy** | 0.7718 | 0.6650 | **0.8138** | **0.9146** | 0.7195 |
-| **Precision** | 0.7597 | N/A | 0.8772 | 0.8984 | **0.9498** |
-| **Recall** | **0.9721** | N/A | 0.8138 | 0.9146 | 0.7195 |
-| **F1-Score** | **0.8529** | 0.8000 | 0.8201 | **0.9053** | 0.7932 |
-| **ROC-AUC** | 0.8315 | N/A | **0.9772** | **0.9076** | **0.9518** |
-| **PR-AUC** | 0.9050 | 0.6228 | **0.9867** | 0.3086 | 0.6490 |
+| **Accuracy** | 0.7718 | 0.6650 | **0.9286** | 0.6006 | 0.7893 |
+| **Precision** | 0.7597 | N/A | 0.9301 | 0.9391 | **0.9445** |
+| **Recall** | **0.9721** | N/A | 0.9286 | 0.6006 | 0.7893 |
+| **F1-Score** | 0.8529 | 0.8000 | **0.9271** | 0.6940 | 0.8425 |
+| **ROC-AUC** | 0.8315 | N/A | **0.9784** | 0.9033 | 0.9418 |
+| **PR-AUC** | 0.9050 | 0.6228 | **0.9877** | 0.3070 | 0.6109 |
 | **BWT (Forgetting)**| ~0.00% | -1.76% | N/A | N/A | N/A |
 
 ---
@@ -53,7 +53,7 @@ The proposed **SSSL_Based_IDS** explicitly targets and solves three critical fla
 
 ### 1. Overcoming "Classifier Collapse" from Extreme Class Imbalance
 **The Problem:** On imbalanced datasets (e.g., CICIDS2017 Port Scans), baseline semi-supervised models predict the majority class (Benign) for almost everything, resulting in near 0% recall for minority attacks (as seen with SPIDER's 0.2994 recall on CICIDS2017).
-**The SSSL Solution:** The model implements **Balanced Batching**. By forcing the network to see equal representations of classes during training, the classification boundary is never warped by the sheer volume of benign traffic. SSSL achieved a staggering **0.9861 F1-Score** on the CICIDS2017 DoS task, proving its robustness.
+**The SSSL Solution:** The model implements **Balanced Batching**. By forcing the network to see equal representations of classes during training, the classification boundary is less dominated by benign traffic. In the latest run, SSSL achieved a **0.9555 F1-Score** on the CICIDS2017 DoS task and **0.9166 F1-Score** on CICIDS2017 Port Scan at the default threshold.
 
 ### 2. Eliminating Pseudo-Label Confirmation Bias
 **The Problem:** In standard semi-supervised models, if the model guesses wrong early on, it applies a highly-confident but incorrect "pseudo-label" to unlabeled data. It then trains on its own mistakes, compounding the error (Confirmation Bias).
@@ -61,7 +61,7 @@ The proposed **SSSL_Based_IDS** explicitly targets and solves three critical fla
 
 ### 3. Combining Self-Supervised Features with Semi-Supervised Logic
 **The Problem:** CITADEL relies purely on Self-Supervised anomaly detection (MAE + LOF), which yields high recall but terrible precision (too many false alarms, F1=0.6021 on CICIDS2017). SPIDER relies purely on Semi-Supervised logic, missing robust feature clustering.
-**The SSSL Solution:** By utilizing **SimCLR** for initial feature representation (pushing similar traffic closer together and pulling different traffic apart), the subsequent **FixMatch** semi-supervised layers have incredibly clean latent spaces to draw boundaries upon. This hybrid approach allows SSSL to massively outperform CITADEL in Precision and F1-Score.
+**The SSSL Solution:** By utilizing **SimCLR** for initial feature representation (pushing similar traffic closer together and pulling different traffic apart), the subsequent **FixMatch** semi-supervised layers have cleaner latent spaces to draw boundaries upon. This hybrid approach improves over CITADEL in weighted Precision and F1-Score on CICIDS2017 and UNSW-NB15.
 
 ---
 
@@ -82,11 +82,11 @@ The proposed **SSSL_Based_IDS** explicitly targets and solves three critical fla
 ### Step 3: Experimental Setup & Results
 *   **Datasets:** Detail the use of KDDCUP99, CICIDS2017, and UNSW-NB15.
 *   **Baselines:** Present SPIDER (Semi-Supervised CL) and CITADEL (Self-Supervised CL) as your baselines.
-*   **Analysis:** Use the tables from Section 2. Emphasize how SSSL completely destroys the baselines on highly imbalanced tasks (like CICIDS2017 DoS and Port Scan), achieving near-perfect F1 scores where baselines failed.
+*   **Analysis:** Use the tables from Section 2. Emphasize where SSSL improves the balance of precision, recall, and F1 on imbalanced tasks, while noting that CICIDS2017 Port Scan still needs threshold calibration because PR-AUC remains low.
 
 ### Step 4: Presentation / Defense Strategy
 1.  **Start with the visual problem:** Show a slide demonstrating how standard models get 0% recall on minority attacks because of imbalance.
 2.  **Introduce your solutions:** Visually explain Balanced Batching and Warmup Epochs.
 3.  **Show the Architecture:** A clean diagram showing raw traffic $\rightarrow$ SimCLR $\rightarrow$ FixMatch $\rightarrow$ GPM.
-4.  **Hit them with the metrics:** Show the massive jumps in F1-score (e.g., jumping from SPIDER's 0.45 F1 to SSSL's 0.98 F1 on CICIDS2017).
+4.  **Hit them with the metrics:** Show the CICIDS2017 F1 gains over SPIDER and CITADEL, especially SSSL's **0.9555** F1 on DoS and **0.9166** F1 on Port Scan.
 5.  **Conclusion:** Summarize that this model is ready for real-world, highly dynamic, and imbalanced network environments.
