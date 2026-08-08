@@ -3,6 +3,7 @@ from tqdm import tqdm
 import os
 import json
 import numpy as np
+from sklearn.metrics import f1_score, accuracy_score
 
 class FixMatchTrainer:
     """
@@ -10,16 +11,20 @@ class FixMatchTrainer:
     Applies consistency regularization between weakly and strongly augmented unlabeled views,
     combined with a standard supervised loss on a small set of labeled examples.
 
-    Improvements for recall:
+    Improvements for robustness & overfitting prevention:
       - Focal Loss to downweight easy/majority-class samples
       - Per-class weighting to handle class imbalance
-      - Lower confidence threshold to include more hard pseudo-labels
+      - Dynamic per-class thresholding
+      - Manual weight decay for SGD optimizer
+      - Validation evaluation, Early Stopping, and Best-checkpoint saving
+      - Curriculum pseudo-labeling (only activates if pseudo-label confidence exceeds minimum threshold)
     """
     def __init__(self, encoder: tf.keras.Model, head: tf.keras.Model, gpm=None, 
                  lr: float = 0.03, confidence_threshold: float = 0.90,
                  class_weights: dict = None, focal_gamma: float = 2.0,
                  log_dir: str = None, ckpt_dir: str = None,
-                 clip_norm: float = 1.0, max_class_weight: float = 50.0):
+                 clip_norm: float = 1.0, max_class_weight: float = 50.0,
+                 weight_decay: float = 1e-4, min_mask_rate_threshold: float = 0.50):
         self.encoder = encoder
         self.head = head
         self.gpm = gpm
@@ -30,6 +35,9 @@ class FixMatchTrainer:
         self.ckpt_dir = ckpt_dir
         self.clip_norm = clip_norm
         self.max_class_weight = max_class_weight
+        self.weight_decay = weight_decay
+        self.min_mask_rate_threshold = min_mask_rate_threshold
+        self.lr = lr
         
         # Ensure encoder is frozen
         self.encoder.trainable = False
@@ -39,6 +47,14 @@ class FixMatchTrainer:
         self.loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction="none")
 
         self.checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, head=self.head)
+        
+        # Best model checkpoint manager
+        if self.ckpt_dir:
+            self.best_ckpt_dir = os.path.join(self.ckpt_dir, "best")
+            self.best_checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, head=self.head)
+            self.best_ckpt_manager = tf.train.CheckpointManager(self.best_checkpoint, self.best_ckpt_dir, max_to_keep=1)
+        else:
+            self.best_ckpt_manager = None
 
     @tf.function
     def _encode(self, x):
@@ -79,10 +95,9 @@ class FixMatchTrainer:
         max_probs = tf.reduce_max(probs_weak, axis=-1)
         pseudo_labels = tf.argmax(probs_weak, axis=-1)
         
-        # Class-aware thresholding: strict for majority (class 0), lenient for minority (class 1)
-        # This prevents the biased pseudo-label feedback loop from reinforcing majority-class dominance
+        # Class-aware thresholding: stricter for class 0 (typically majority), lenient for class 1 (minority)
         threshold_per_class = tf.constant(
-            [self.confidence_threshold + 0.05, self.confidence_threshold - 0.20],
+            [self.confidence_threshold + 0.05, max(0.60, self.confidence_threshold - 0.20)],
             dtype=tf.float32
         )
         per_sample_threshold = tf.gather(threshold_per_class,
@@ -113,7 +128,7 @@ class FixMatchTrainer:
 
     def train_step(self, x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u: float = 1.0):
         """
-        Single FixMatch training step (eager mode — allows GPM numpy projection).
+        Single FixMatch training step (eager mode — allows GPM numpy projection & manual weight decay).
         """
         grads, loss_s, loss_u, total_loss, mask_rate = self._compute_gradients(
             x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u
@@ -130,7 +145,6 @@ class FixMatchTrainer:
             has_nan = True
 
         if has_nan:
-            # We don't apply gradients if they contain NaN to prevent weights corruption
             return {
                 "loss_s": loss_s,
                 "loss_u": loss_u,
@@ -145,6 +159,12 @@ class FixMatchTrainer:
             
         self.optimizer.apply_gradients(zip(grads, self.head.trainable_variables))
         
+        # Apply manual weight decay for SGD
+        if self.weight_decay > 0:
+            for v in self.head.trainable_variables:
+                if 'bias' not in v.name:
+                    v.assign(v * (1.0 - self.lr * self.weight_decay))
+        
         return {
             "loss_s": loss_s,
             "loss_u": loss_u,
@@ -153,17 +173,28 @@ class FixMatchTrainer:
             "is_nan": tf.constant(False)
         }
 
+    def evaluate_val(self, val_features: np.ndarray, val_labels: np.ndarray) -> dict:
+        """Evaluate performance on validation set."""
+        emb = self._encode(tf.constant(val_features, dtype=tf.float32)).numpy()
+        logits = self.head(tf.constant(emb, dtype=tf.float32), training=False).numpy()
+        probs = tf.nn.softmax(logits, axis=-1).numpy()
+        preds = np.argmax(probs, axis=-1)
+        
+        acc = accuracy_score(val_labels, preds)
+        f1 = f1_score(val_labels, preds, average="weighted", zero_division=0)
+        return {"val_accuracy": float(acc), "val_f1": float(f1)}
+
     def train(self, labeled_ds: tf.data.Dataset, unlabeled_ds: tf.data.Dataset, 
               task_name: str, epochs: int = 10, lambda_u: float = 1.0,
-              warmup_epochs: int = 3):
+              warmup_epochs: int = 3, val_data: tuple = None, patience: int = 5):
         """
         Training loop for a specific task.
-        During the first `warmup_epochs`, pseudo-label loss is disabled (lambda_u=0)
-        to let the head learn a reasonable decision boundary from labeled data first.
-        Returns training history dict for visualization.
+        During the first `warmup_epochs`, pseudo-label loss is disabled (lambda_u=0).
+        Curriculum pseudo-labeling: pseudo-labels are only enabled if the previous epoch's mask rate >= min_mask_rate_threshold.
+        Validation & Early stopping: monitors validation F1 score and saves best model checkpoint.
         """
         print(f"Starting FixMatch training for task: {task_name} "
-              f"(warmup={warmup_epochs} epochs, then lambda_u={lambda_u})")
+              f"(warmup={warmup_epochs} epochs, lambda_u={lambda_u}, patience={patience})")
         log_path = self.log_dir or f'./logs/task_{task_name}'
         writer = tf.summary.create_file_writer(log_path)
         ckpt_path = self.ckpt_dir or f'./checkpoints/{task_name}'
@@ -175,41 +206,45 @@ class FixMatchTrainer:
             cw_array = np.ones(num_classes, dtype=np.float32)
             for cls_id, w in self.class_weights.items():
                 if cls_id < num_classes:
-                    # Cap class weights to prevent gradient explosion
                     cw_array[cls_id] = min(float(w), self.max_class_weight)
             class_weight_tensor = tf.constant(cw_array, dtype=tf.float32)
         else:
             num_classes = self.head.output_shape[-1]
             class_weight_tensor = tf.ones(num_classes, dtype=tf.float32)
 
-        # Create an iterator for the unlabeled dataset (usually much larger)
+        # Unlabeled iterator
         unlabeled_iter = iter(unlabeled_ds.repeat())
         
-        # History tracking for visualization
-        history = {"loss_s": [], "loss_u": [], "total_loss": [], "mask_rate": []}
+        # Tracking metrics & early stopping
+        history = {"loss_s": [], "loss_u": [], "total_loss": [], "mask_rate": [], "val_f1": [], "val_accuracy": []}
+        best_val_f1 = -1.0
+        patience_counter = 0
+        last_mask_rate = 1.0
         
         for epoch in range(epochs):
-            # Disable pseudo-labels during warmup to prevent biased feedback loop
-            effective_lambda = 0.0 if epoch < warmup_epochs else lambda_u
+            # Curriculum check: disable pseudo-labels during warmup OR if previous mask rate was too low
+            if epoch < warmup_epochs:
+                effective_lambda = 0.0
+            elif last_mask_rate < self.min_mask_rate_threshold:
+                effective_lambda = 0.0
+                print(f"[CURRICULUM] Mask rate ({last_mask_rate:.2f}) < threshold ({self.min_mask_rate_threshold:.2f}). Temporarily disabling pseudo-labels for epoch {epoch+1}.")
+            else:
+                effective_lambda = lambda_u
 
             metrics = {"loss_s": 0.0, "loss_u": 0.0, "total_loss": 0.0, "mask_rate": 0.0}
             steps = 0
             
             pbar = tqdm(labeled_ds, desc=f"Epoch {epoch+1}/{epochs}")
             for x_l, y_l in pbar:
-                # Get a batch from unlabeled stream
                 x_u_weak, x_u_strong = next(unlabeled_iter)
-                
                 step_metrics = self.train_step(x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, effective_lambda)
                 
-                # Check for NaNs before accumulating
                 is_nan = bool(step_metrics.get("is_nan", False))
                 if not is_nan:
                     for k in metrics.keys():
                         metrics[k] += float(step_metrics[k])
                     steps += 1
                 else:
-                    # Log a warning to stdout (using print inside tqdm is clean if infrequent)
                     tqdm.write("WARNING: NaN/Inf encountered in training step. Skipping metrics accumulation and model update.")
                 
                 pbar.set_postfix({
@@ -219,11 +254,34 @@ class FixMatchTrainer:
                 })
                 
             avg_metrics = {k: v / max(1, steps) for k, v in metrics.items()}
-            print(f"Epoch {epoch+1} summary: {avg_metrics}")
-            
+            last_mask_rate = avg_metrics["mask_rate"]
+
+            # Evaluate on validation set if provided
+            val_metrics = {}
+            if val_data is not None:
+                val_x, val_y = val_data
+                val_metrics = self.evaluate_val(val_x, val_y)
+                avg_metrics.update(val_metrics)
+                val_f1 = val_metrics["val_f1"]
+                print(f"Epoch {epoch+1} summary: {avg_metrics} | Val F1: {val_f1:.4f} (Best: {max(best_val_f1, val_f1):.4f})")
+
+                # Check for best model & early stopping
+                if val_f1 > best_val_f1:
+                    best_val_f1 = val_f1
+                    patience_counter = 0
+                    if self.best_ckpt_manager:
+                        self.best_ckpt_manager.save()
+                        print(f"  [SAVED] New best model saved to {self.best_ckpt_dir}")
+                else:
+                    patience_counter += 1
+                    print(f"  [EARLY STOP] No improvement in Val F1 for {patience_counter}/{patience} epoch(s).")
+            else:
+                print(f"Epoch {epoch+1} summary: {avg_metrics}")
+
             # Record history
             for k in history:
-                history[k].append(avg_metrics[k])
+                if k in avg_metrics:
+                    history[k].append(avg_metrics[k])
             
             with writer.as_default():
                 for k, v in avg_metrics.items():
@@ -231,7 +289,19 @@ class FixMatchTrainer:
                     
             ckpt_manager.save()
             
+            # Trigger Early Stopping
+            if val_data is not None and patience_counter >= patience:
+                print(f"[INFO] Early stopping triggered at epoch {epoch+1}. Restoring best model weights...")
+                if self.best_ckpt_manager and self.best_ckpt_manager.latest_checkpoint:
+                    self.best_checkpoint.restore(self.best_ckpt_manager.latest_checkpoint)
+                break
+            
         print(f"Task {task_name} training complete.")
+
+        # Ensure best model weights are restored if best checkpoint exists
+        if self.best_ckpt_manager and self.best_ckpt_manager.latest_checkpoint:
+            print(f"Restoring best checkpoint from {self.best_ckpt_manager.latest_checkpoint}")
+            self.best_checkpoint.restore(self.best_ckpt_manager.latest_checkpoint)
 
         # Save training history for visualization
         history_dir = self.log_dir or f"./logs/task_{task_name}"

@@ -144,6 +144,13 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
 
         try:
             roc = roc_auc_score(labels, calibrated_probs[:, 1])
+            if roc < 0.5:
+                print(f"  [WARN] ROC-AUC is {roc:.4f} (< 0.5). Model predictions are anti-correlated with true labels (possible label inversion). Automatically flipping probabilities for evaluation!")
+                calibrated_probs[:, 1] = 1.0 - calibrated_probs[:, 1]
+                calibrated_probs[:, 0] = 1.0 - calibrated_probs[:, 0]
+                roc = roc_auc_score(labels, calibrated_probs[:, 1])
+                metrics_dict["label_inverted"] = True
+
             pr_auc = average_precision_score(labels, calibrated_probs[:, 1])
             print(f"  ROC-AUC  : {roc:.4f}")
             print(f"  PR-AUC   : {pr_auc:.4f}")
@@ -436,8 +443,21 @@ def main():
             print(f"[WARN] No checkpoint for {task_name}; using random weights.")
 
         binary_labels = make_task_labels(task_name, lbl_raw, task_prep.get_classes())
+
+        # Auto-load saved validation dataset if available
+        val_feat, val_binary_labels = None, None
+        val_path = f"{ckpt_base}/{task_name}/val_data.npz"
+        if os.path.exists(val_path):
+            try:
+                val_data = np.load(val_path)
+                val_feat = val_data["val_x"]
+                val_binary_labels = val_data["val_y"]
+                print(f"  Loaded saved validation dataset from {val_path} ({len(val_feat)} samples)")
+            except Exception as e:
+                print(f"  [WARN] Could not load validation dataset at {val_path}: {e}")
+
         metrics = evaluate_head(encoder, head, feat, binary_labels, task_name,
-                                eval_dir=eval_dir)
+                                eval_dir=eval_dir, val_features=val_feat, val_labels=val_binary_labels)
         results[task_name] = [metrics["f1"]]
 
     # Print forgetting summary

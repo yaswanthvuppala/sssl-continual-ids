@@ -10,7 +10,7 @@ def build_classifier_head(embed_dim: int = 256, num_classes: int = 2, name: str 
     
     x = tf.keras.layers.Dense(64, activation="relu", kernel_regularizer=regularizer)(inputs)
     x = tf.keras.layers.LayerNormalization()(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Dropout(0.4)(x)
     
     outputs = tf.keras.layers.Dense(num_classes, activation=None, kernel_regularizer=regularizer, name=f"logits_{name}")(x)
     

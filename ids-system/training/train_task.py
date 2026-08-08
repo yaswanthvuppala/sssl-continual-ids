@@ -12,6 +12,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from data.dataset_loader import FlowDatasetLoader
 from data.preprocessing import FlowPreprocessor
 from data.tf_dataset import make_labeled_dataset, make_unlabeled_dataset, make_balanced_dataset
+from sklearn.model_selection import train_test_split
 from classifiers.base_head import build_classifier_head
 from classifiers.dos_head import build_dos_head
 from classifiers.scan_head import build_scan_head
@@ -215,7 +216,9 @@ def main():
 
     print(f"Initializing Continual Learning for Task: {args.task}")
 
-    if args.label_col is None or (args.label_col == "Label" and args.task != "intrusion"):
+    if not (args.dataset or args.train_csv):
+        args.label_col = "Label"
+    elif args.label_col is None or (args.label_col == "Label" and args.task != "intrusion"):
         args.label_col = "Label" if args.task == "intrusion" else "AttackCategory"
 
     # Resolve dataset-scoped base paths
@@ -290,7 +293,6 @@ def main():
                 f"encoder expects {expected_input_dim}. Re-run SSL pretraining "
                 "for this dataset first."
             )
-        X_u = X_l
     elif args.train_csv:
         df_labeled = loader.load_csv(args.train_csv, label_col=args.label_col)
         expected_input_dim = encoder.input_shape[-1]
@@ -326,18 +328,36 @@ def main():
                 f"Training features have {X_l.shape[1]} columns but the frozen encoder expects "
                 f"{expected_input_dim}. Re-run SSL pretraining for this dataset first."
             )
-        X_u = X_l
     else:
-        df_labeled = loader.create_synthetic_data(num_samples=500, num_features=80)
-        df_unlabeled = loader.create_synthetic_data(num_samples=20000, num_features=80)
+        df_labeled = loader.create_synthetic_data(num_samples=2000, num_features=80)
         preprocessor = FlowPreprocessor()
         X_l, y_l = preprocessor.fit_transform(df_labeled, label_col=args.label_col)
-        X_u, _ = preprocessor.transform(df_unlabeled, label_col=args.label_col)
     
     y_l_binary = make_task_labels(args.task, y_l, preprocessor.get_classes())
+    
+    # 1. Carve out a 15% validation split for early stopping and threshold tuning
+    X_train_full, X_val, y_train_full, y_val = train_test_split(
+        X_l, y_l_binary, test_size=0.15, random_state=42, stratify=y_l_binary
+    )
+    
+    # Save validation data for evaluator
+    val_save_path = f"{ckpt_base}/{args.task}/val_data.npz"
+    os.makedirs(os.path.dirname(val_save_path), exist_ok=True)
+    np.savez(val_save_path, val_x=X_val, val_y=y_val)
+    print(f"Validation data saved to {val_save_path} ({len(X_val)} samples)")
+    
+    # 2. Split train set into labeled (20%) and unlabeled (80%) subsets to prevent X_u = X_l feedback leakage
+    X_l_sub, X_u_sub, y_l_binary, _ = train_test_split(
+        X_train_full, y_train_full, test_size=0.80, random_state=42, stratify=y_train_full
+    )
+    X_l = X_l_sub
+    X_u = X_u_sub
+    
     if args.max_labeled is not None:
         X_l = X_l[:args.max_labeled]
         y_l_binary = y_l_binary[:args.max_labeled]
+    
+    print(f"Dataset split summary -> Labeled: {len(X_l)} samples | Unlabeled: {len(X_u)} samples | Validation: {len(X_val)} samples")
     
     # Compute class weights (inverse frequency) to address class imbalance
     unique_classes, class_counts = np.unique(y_l_binary, return_counts=True)
@@ -346,7 +366,7 @@ def main():
     class_weights = {}
     for cls_id, count in zip(unique_classes, class_counts):
         class_weights[int(cls_id)] = n_samples / (n_classes * count)
-    print(f"Class distribution: {dict(zip(unique_classes.tolist(), class_counts.tolist()))}")
+    print(f"Class distribution (labeled): {dict(zip(unique_classes.tolist(), class_counts.tolist()))}")
     print(f"Class weights: {class_weights}")
     
     # Auto-enable class balancing for imbalanced datasets
@@ -365,7 +385,6 @@ def main():
             raise ValueError("Balanced batching requires both classes to be present.")
         print(f"[INFO] Using class-balanced batching (50/50 per batch)")
         labeled_ds = make_balanced_dataset(X_l, y_l_binary, batch_size=args.batch_size)
-        # For balanced datasets, set a fixed number of steps per epoch
         minority_count = int(min(class_counts))
         steps_per_epoch = max(100, min(2 * minority_count // args.batch_size, 2000))
         labeled_ds = labeled_ds.take(steps_per_epoch)
@@ -373,7 +392,6 @@ def main():
     else:
         labeled_ds = make_labeled_dataset(X_l, y_l_binary, batch_size=args.batch_size)
     
-    # Cap the steps per epoch if the dataset is large, to keep training times reasonable.
     max_steps_per_epoch = 2000
     if len(X_l) / args.batch_size > max_steps_per_epoch:
         print(f"[INFO] Labeled dataset is large ({len(X_l)} samples). Capping steps per epoch to {max_steps_per_epoch} for speed.")
@@ -381,17 +399,19 @@ def main():
         
     unlabeled_ds = make_unlabeled_dataset(X_u, batch_size=args.unlabeled_batch_size, for_ssl=False)
     
-    # Train via FixMatch with focal loss and class weighting
+    # Train via FixMatch with focal loss, class weighting, validation & early stopping
     trainer = FixMatchTrainer(
         encoder=encoder, head=head, gpm=gpm, lr=0.03,
         class_weights=class_weights, focal_gamma=2.0, confidence_threshold=0.90,
         log_dir=f"{log_base}/task_{args.task}",
         ckpt_dir=f"{ckpt_base}/{args.task}",
         clip_norm=1.0,
-        max_class_weight=10.0
+        max_class_weight=10.0,
+        weight_decay=1e-4,
+        min_mask_rate_threshold=0.50
     )
     trainer.train(labeled_ds, unlabeled_ds, task_name=args.task, epochs=args.epochs,
-                  warmup_epochs=args.warmup_epochs)
+                  warmup_epochs=args.warmup_epochs, val_data=(X_val, y_val), patience=5)
     
     # After training, capture the gradients for this task to protect it in the future
     if gpm is not None and memory_bank is not None:

@@ -1,5 +1,6 @@
 param (
     [int]$ssl_epochs = 15,
+    [int]$unsw_ssl_epochs = 25,
     [int]$task_epochs = 20,
     [int]$gpm_epochs = 10,
     [string[]]$datasets = @("unsw", "kddcup99", "cicids2017"),
@@ -40,8 +41,8 @@ foreach ($dataset in $datasets) {
         if (-not $retrain -and (Test-Path "checkpoints/unsw/encoder_frozen.keras")) {
             Write-Host "[1/4] Frozen encoder already exists. Skipping SSL Pretraining." -ForegroundColor Green
         } else {
-            Write-Host "[1/4] Running SSL Pretraining..." -ForegroundColor Yellow
-            python training/train_ssl.py --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" --label_col "label" --epochs $ssl_epochs --dataset_name unsw
+            Write-Host "[1/4] Running SSL Pretraining ($unsw_ssl_epochs epochs)..." -ForegroundColor Yellow
+            python training/train_ssl.py --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" --label_col "label" --epochs $unsw_ssl_epochs --dataset_name unsw
         }
 
         # 2. Train, Evaluate & Visualize Intrusion
