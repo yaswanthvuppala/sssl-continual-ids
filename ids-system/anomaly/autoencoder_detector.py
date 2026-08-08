@@ -7,25 +7,27 @@ class AutoencoderDetector:
     Autoencoder-based anomaly detector operating on SSL embedding space.
     Trained on normal traffic embeddings; high reconstruction error indicates anomaly.
     """
-    def __init__(self, embed_dim: int = 256, latent_dim: int = 64):
+    def __init__(self, embed_dim: int = 256, latent_dim: int = 16):
         self.embed_dim = embed_dim
         self.latent_dim = latent_dim
         self.model = self._build_autoencoder()
-        self.threshold = 0.5  # Default, should be calibrated
+        self.threshold = 0.5  # Default, calibrated on validation data
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
         
     def _build_autoencoder(self) -> tf.keras.Model:
-        """Builds a symmetric autoencoder for reconstruction-based anomaly detection."""
+        """Builds a tight symmetric autoencoder with dropout for reconstruction-based anomaly detection."""
         inputs = tf.keras.Input(shape=(self.embed_dim,), name="ae_input")
         
         # Encoder
-        x = tf.keras.layers.Dense(128, activation="relu")(inputs)
-        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.Dense(64, activation="relu")(inputs)
+        x = tf.keras.layers.LayerNormalization()(x)
+        x = tf.keras.layers.Dropout(0.1)(x)
         x = tf.keras.layers.Dense(self.latent_dim, activation="relu", name="ae_latent")(x)
         
         # Decoder
-        x = tf.keras.layers.Dense(128, activation="relu")(x)
-        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.Dense(64, activation="relu")(x)
+        x = tf.keras.layers.LayerNormalization()(x)
+        x = tf.keras.layers.Dropout(0.1)(x)
         outputs = tf.keras.layers.Dense(self.embed_dim, activation=None, name="ae_reconstruction")(x)
         
         model = tf.keras.Model(inputs, outputs, name="anomaly_autoencoder")
@@ -41,11 +43,16 @@ class AutoencoderDetector:
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
         return loss
     
-    def train(self, normal_embeddings: np.ndarray, epochs: int = 20, batch_size: int = 256):
-        """Train the autoencoder on embeddings from normal (benign) traffic."""
-        print(f"Training anomaly autoencoder on {len(normal_embeddings)} normal embeddings...")
+    def train(self, normal_embeddings: np.ndarray, epochs: int = 20, batch_size: int = 256, val_split: float = 0.2):
+        """Train the autoencoder on embeddings from normal (benign) traffic and calibrate on validation split."""
+        n_samples = len(normal_embeddings)
+        n_val = int(n_samples * val_split)
+        train_emb = normal_embeddings[n_val:]
+        val_emb = normal_embeddings[:n_val] if n_val > 0 else normal_embeddings
+        
+        print(f"Training anomaly autoencoder on {len(train_emb)} normal embeddings (holding out {len(val_emb)} for threshold calibration)...")
         dataset = tf.data.Dataset.from_tensor_slices(
-            tf.constant(normal_embeddings, dtype=tf.float32)
+            tf.constant(train_emb, dtype=tf.float32)
         ).shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
         
         for epoch in range(epochs):
@@ -59,9 +66,9 @@ class AutoencoderDetector:
             if (epoch + 1) % 5 == 0 or epoch == 0:
                 print(f"  AE Epoch {epoch+1}/{epochs} — Reconstruction Loss: {avg_loss:.6f}")
         
-        # Auto-calibrate threshold from training data
-        self._calibrate_threshold(normal_embeddings)
-        print(f"Anomaly autoencoder training complete. Threshold: {self.threshold:.6f}")
+        # Auto-calibrate threshold on held-out VALIDATION normal embeddings
+        self._calibrate_threshold(val_emb)
+        print(f"Anomaly autoencoder training complete. Validation-calibrated Threshold: {self.threshold:.6f}")
         
     def _calibrate_threshold(self, normal_embeddings: np.ndarray, percentile: float = 95.0):
         """Set threshold as the Nth percentile of reconstruction errors on normal data."""

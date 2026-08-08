@@ -136,7 +136,8 @@ def main():
         add_arg(cmd, "train_csv", args.train_csv)
         add_arg(cmd, "dataset", args.dataset)
         add_arg(cmd, "data_path", args.data_path)
-        add_arg(cmd, "label_col", args.label_col)
+        label_col = args.label_col or ("Label" if args.task == "intrusion" else "AttackCategory")
+        add_arg(cmd, "label_col", label_col)
         cmd.extend(["--dataset_name", dataset_name])
         run(cmd)
 
@@ -146,7 +147,8 @@ def main():
         add_arg(cmd, "test_csv", args.test_csv)
         add_arg(cmd, "dataset", args.dataset)
         add_arg(cmd, "data_path", args.data_path)
-        add_arg(cmd, "label_col", args.label_col)
+        label_col = args.label_col or (("Label" if args.task == "intrusion" else "AttackCategory") if args.task else None)
+        add_arg(cmd, "label_col", label_col)
         cmd.extend(["--dataset_name", dataset_name])
         run(cmd)
 

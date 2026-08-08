@@ -10,6 +10,7 @@ import json
 import argparse
 import numpy as np
 import tensorflow as tf
+from typing import Optional, Dict, Any, List, Tuple
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, average_precision_score, confusion_matrix,
@@ -69,8 +70,10 @@ def find_optimal_threshold(labels, probs_positive, strategy="f1"):
 
 def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
                   features: np.ndarray, labels: np.ndarray, task_name: str,
-                  eval_dir: str = None):
-    """Evaluate a single classifier head and print metrics."""
+                  eval_dir: str = None,
+                  val_features: Optional[np.ndarray] = None,
+                  val_labels: Optional[np.ndarray] = None):
+    """Evaluate a single classifier head and print metrics. Fits calibration & threshold on validation set if provided."""
     eval_dir = eval_dir or "./logs/eval"
     embeddings = encoder(tf.constant(features, dtype=tf.float32), training=False).numpy()
     logits = head(tf.constant(embeddings, dtype=tf.float32), training=False).numpy()
@@ -107,25 +110,37 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
 
     # ROC-AUC (binary tasks) + optimal threshold
     if probs.shape[-1] == 2:
-        # --- Temperature Calibration ---
+        # --- Temperature Calibration & Optimal Threshold ---
         calibrated_probs = probs
         temperature = 1.0
-        try:
-            from training.calibration import TemperatureScaler
-            scaler = TemperatureScaler()
-            print("  Fitting Temperature Scaler for probability calibration...")
-            scaler.fit(logits, labels)
-            temperature = scaler.temperature
-            print(f"  Learned Temperature: {temperature:.4f}")
+        opt_threshold = 0.5
+
+        if val_features is not None and val_labels is not None:
+            val_emb = encoder(tf.constant(val_features, dtype=tf.float32), training=False).numpy()
+            val_logits = head(tf.constant(val_emb, dtype=tf.float32), training=False).numpy()
+            val_probs = tf.nn.softmax(val_logits, axis=-1).numpy()
             
-            # Save temperature
-            scaler.save(f"{eval_dir}/temperature_{task_name}.json")
-            
-            # Calibrate probabilities
-            calibrated_probs = scaler.calibrate(logits)
-            metrics_dict["temperature"] = float(temperature)
-        except Exception as e:
-            print(f"  [WARN] Temperature scaling failed: {e}")
+            try:
+                from training.calibration import TemperatureScaler
+                scaler = TemperatureScaler()
+                print("  Fitting Temperature Scaler on VALIDATION data...")
+                scaler.fit(val_logits, val_labels)
+                temperature = scaler.temperature
+                print(f"  Learned Temperature (val): {temperature:.4f}")
+                scaler.save(f"{eval_dir}/temperature_{task_name}.json")
+                calibrated_probs = scaler.calibrate(logits)
+                metrics_dict["temperature"] = float(temperature)
+            except Exception as e:
+                print(f"  [WARN] Temperature scaling failed: {e}")
+
+            try:
+                val_calibrated_probs = scaler.calibrate(val_logits) if 'scaler' in locals() else val_probs
+                opt_threshold, opt_info = find_optimal_threshold(val_labels, val_calibrated_probs[:, 1], strategy="f1")
+                print(f"  Found Optimal Threshold on VALIDATION data: {opt_threshold:.4f}")
+            except Exception as e:
+                print(f"  [WARN] Validation optimal threshold search failed: {e}")
+        else:
+            print("  [INFO] No validation data passed. Using uncalibrated test probabilities & default threshold (0.5) to avoid test set leakage.")
 
         try:
             roc = roc_auc_score(labels, calibrated_probs[:, 1])
@@ -135,8 +150,7 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
             metrics_dict["roc_auc"] = float(roc)
             metrics_dict["pr_auc"] = float(pr_auc)
 
-            # --- Optimal threshold search ---
-            opt_threshold, opt_info = find_optimal_threshold(labels, calibrated_probs[:, 1], strategy="f1")
+            # Evaluate with validation-tuned threshold on test set
             preds_opt = (calibrated_probs[:, 1] >= opt_threshold).astype(int)
             acc_opt = accuracy_score(labels, preds_opt)
             rec_opt = recall_score(labels, preds_opt, average="weighted", zero_division=0)
@@ -144,7 +158,7 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
             rec_opt_pc = recall_score(labels, preds_opt, average=None, zero_division=0)
             prec_opt_pc = precision_score(labels, preds_opt, average=None, zero_division=0)
 
-            print(f"\n  --- Optimal Threshold: {opt_threshold:.4f} ---")
+            print(f"\n  --- Test Performance at Validation-Tuned Threshold ({opt_threshold:.4f}) ---")
             print(f"  Accuracy : {acc_opt:.4f}")
             print(f"  Recall   : {rec_opt:.4f}  (class-0: {rec_opt_pc[0]:.4f}, class-1: {rec_opt_pc[1]:.4f})")
             print(f"  F1       : {f1_opt:.4f}")
@@ -397,11 +411,23 @@ def main():
     results = {}
     task_names = ["intrusion", "dos", "port_scan"] if args.task == "all" else [args.task]
     for task_name in task_names:
+        # Load task-specific preprocessor and label column if available
+        task_label_col = args.label_col if (args.label_col and args.task != "all") else ("Label" if task_name == "intrusion" else "AttackCategory")
+        task_prep_path = f"{ckpt_base}/preprocessor.pkl" if task_name == "intrusion" else f"{ckpt_base}/preprocessor_{task_name}.pkl"
+        if os.path.exists(task_prep_path):
+            task_prep = FlowPreprocessor.load(task_prep_path)
+            feat, lbl_raw = task_prep.transform(df, label_col=task_label_col)
+        else:
+            task_prep = preprocessor
+            feat, lbl_raw = features, labels_raw
+
         head = build_task_head(task_name, embed_dim=embed_dim)
-        ckpt = tf.train.latest_checkpoint(f"{ckpt_base}/{task_name}")
-        if not ckpt:
-            # Fallback to old flat path
-            ckpt = tf.train.latest_checkpoint(f"./checkpoints/{task_name}")
+        ckpt = (
+            tf.train.latest_checkpoint(f"{ckpt_base}/{task_name}/best")
+            or tf.train.latest_checkpoint(f"{ckpt_base}/{task_name}")
+            or tf.train.latest_checkpoint(f"./checkpoints/{task_name}/best")
+            or tf.train.latest_checkpoint(f"./checkpoints/{task_name}")
+        )
         if ckpt:
             tf.train.Checkpoint(head=head).restore(ckpt).expect_partial()
         else:
@@ -409,8 +435,8 @@ def main():
                 raise FileNotFoundError(f"No checkpoint for {task_name}. Train the task head first.")
             print(f"[WARN] No checkpoint for {task_name}; using random weights.")
 
-        binary_labels = make_task_labels(task_name, labels_raw, preprocessor.get_classes())
-        metrics = evaluate_head(encoder, head, features, binary_labels, task_name,
+        binary_labels = make_task_labels(task_name, lbl_raw, task_prep.get_classes())
+        metrics = evaluate_head(encoder, head, feat, binary_labels, task_name,
                                 eval_dir=eval_dir)
         results[task_name] = [metrics["f1"]]
 

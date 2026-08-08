@@ -20,9 +20,9 @@ def nt_xent_loss(z1: tf.Tensor, z2: tf.Tensor, temperature: float = 0.1) -> tf.T
     # Shape: (2*Batch_Size, 2*Batch_Size)
     sim_matrix = tf.matmul(z, z, transpose_b=True) / temperature
     
-    # Mask out self-similarity (diagonal)
+    # Mask out self-similarity (diagonal) with numerically safe large negative number (-1e4)
     mask = tf.eye(2 * batch_size, dtype=tf.bool)
-    sim_matrix = tf.where(mask, tf.constant(-1e9, dtype=sim_matrix.dtype), sim_matrix)
+    sim_matrix = tf.where(mask, tf.constant(-1e4, dtype=sim_matrix.dtype), sim_matrix)
     
     # Labels: The positive pairs are shifted by batch_size
     labels = tf.concat([

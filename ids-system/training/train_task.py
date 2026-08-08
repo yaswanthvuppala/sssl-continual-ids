@@ -215,6 +215,9 @@ def main():
 
     print(f"Initializing Continual Learning for Task: {args.task}")
 
+    if args.label_col is None or (args.label_col == "Label" and args.task != "intrusion"):
+        args.label_col = "Label" if args.task == "intrusion" else "AttackCategory"
+
     # Resolve dataset-scoped base paths
     ds = args.dataset_name
     ckpt_base = f"./checkpoints/{ds}"
@@ -255,7 +258,11 @@ def main():
         expected_input_dim = encoder.input_shape[-1]
         if os.path.exists(args.preprocessor_path):
             preprocessor = FlowPreprocessor.load(args.preprocessor_path)
+            refit_needed = (args.task != "intrusion" and set(preprocessor.get_classes()).issubset({"attack", "normal"}))
             try:
+                if refit_needed:
+                    print(f"[WARN] Preprocessor at {args.preprocessor_path} has binary classes {preprocessor.get_classes()}, refitting for task '{args.task}' on '{args.label_col}'...")
+                    raise ValueError("Refitting preprocessor for task-specific attack categories.")
                 X_l, y_l = preprocessor.transform(
                     df_labeled, label_col=args.label_col
                 )
@@ -289,7 +296,11 @@ def main():
         expected_input_dim = encoder.input_shape[-1]
         if os.path.exists(args.preprocessor_path):
             preprocessor = FlowPreprocessor.load(args.preprocessor_path)
+            refit_needed = (args.task != "intrusion" and set(preprocessor.get_classes()).issubset({"attack", "normal"}))
             try:
+                if refit_needed:
+                    print(f"[WARN] Preprocessor at {args.preprocessor_path} has binary classes {preprocessor.get_classes()}, refitting for task '{args.task}' on '{args.label_col}'...")
+                    raise ValueError("Refitting preprocessor for task-specific attack categories.")
                 X_l, y_l = preprocessor.transform(df_labeled, label_col=args.label_col)
             except (ValueError, KeyError) as e:
                 print(f"[WARN] Saved preprocessor incompatible with label column '{args.label_col}': {e}")
@@ -338,23 +349,25 @@ def main():
     print(f"Class distribution: {dict(zip(unique_classes.tolist(), class_counts.tolist()))}")
     print(f"Class weights: {class_weights}")
     
-    # Log if class imbalance is severe (ratio > 50:1)
+    # Auto-enable class balancing for imbalanced datasets
+    use_balanced = args.balanced
     if len(class_counts) > 1:
         min_c, max_c = min(class_counts), max(class_counts)
         ratio = max_c / max(1, min_c)
-        if ratio > 50.0:
-            print(f"[WARN] Severe class imbalance detected (ratio {ratio:.1f}:1). FixMatchTrainer will cap class weights and clip gradients.")
+        if ratio > 5.0:
+            if not use_balanced:
+                print(f"[INFO] Class imbalance ratio is {ratio:.1f}:1 (>5.0). Auto-enabling class-balanced batching for '{args.task}'.")
+            use_balanced = True
     
     # Create datasets
-    if args.balanced:
+    if use_balanced:
         if len(class_counts) < 2:
             raise ValueError("Balanced batching requires both classes to be present.")
         print(f"[INFO] Using class-balanced batching (50/50 per batch)")
         labeled_ds = make_balanced_dataset(X_l, y_l_binary, batch_size=args.batch_size)
         # For balanced datasets, set a fixed number of steps per epoch
-        # since the dataset is infinite (uses .repeat() internally)
         minority_count = int(min(class_counts))
-        steps_per_epoch = max(1, min(2 * minority_count // args.batch_size, 2000))
+        steps_per_epoch = max(100, min(2 * minority_count // args.batch_size, 2000))
         labeled_ds = labeled_ds.take(steps_per_epoch)
         print(f"[INFO] Steps per epoch (balanced): {steps_per_epoch}")
     else:

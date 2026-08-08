@@ -22,18 +22,27 @@ class FlowPreprocessor:
         self.feature_cols = None
         self.numeric_cols = None
         self.categorical_cols = None
+        self.numeric_medians = {}
         self.is_fitted = False
 
     def fit_transform(self, df: pd.DataFrame, label_col: str = "Label") -> Tuple[np.ndarray, np.ndarray]:
         """Fits the scalers and encoders, then transforms the data."""
+        # Initial cleanup & median calculation
+        df = df.replace([np.inf, -np.inf], np.nan)
+        X_init = self._split_features(df, label_col)
+        self.numeric_cols = X_init.select_dtypes(include=[np.number]).columns.tolist()
+        self.categorical_cols = [c for c in X_init.columns if c not in self.numeric_cols]
+        
+        # Calculate medians for robust imputation
+        for col in self.numeric_cols:
+            self.numeric_medians[col] = float(df[col].median()) if col in df.columns and not df[col].dropna().empty else 0.0
+
         df = self._clean_data(df.copy())
         
         # Separate features and labels
         y = df[label_col].values
         X = self._split_features(df, label_col)
         self.feature_cols = X.columns.tolist()
-        self.numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-        self.categorical_cols = [c for c in X.columns if c not in self.numeric_cols]
         
         # Fit and transform labels
         y_encoded = self.label_encoder.fit_transform(y)
@@ -61,7 +70,11 @@ class FlowPreprocessor:
         
         if label_col in df.columns:
             y = df[label_col].values
-            y_encoded = self.label_encoder.transform(y)
+            # Safe label encoding for unseen test classes
+            known_classes = set(self.label_encoder.classes_)
+            fallback_class = self.label_encoder.classes_[0]
+            y_safe = np.array([val if val in known_classes else fallback_class for val in y])
+            y_encoded = self.label_encoder.transform(y_safe)
             X = self._split_features(df, label_col)
         else:
             y_encoded = None
@@ -71,7 +84,7 @@ class FlowPreprocessor:
         if self.feature_cols:
             for col in self.feature_cols:
                 if col not in X.columns:
-                    X[col] = 0 if col in (self.numeric_cols or []) else "unknown"
+                    X[col] = self.numeric_medians.get(col, 0.0) if col in (self.numeric_cols or []) else "unknown"
             X = X[self.feature_cols]
             
         X_scaled = self.transformer.transform(X)
@@ -79,11 +92,12 @@ class FlowPreprocessor:
         return X_scaled.astype(np.float32), (y_encoded.astype(np.int32) if y_encoded is not None else None)
 
     def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Removes infinite values and imputes NaNs."""
+        """Removes infinite values and imputes NaNs using fitted medians or current column medians."""
         df = df.replace([np.inf, -np.inf], np.nan)
-        # Fill numeric NaNs with 0 (or could use median)
         numeric_cols = df.select_dtypes(include=[np.number]).columns
-        df[numeric_cols] = df[numeric_cols].fillna(0)
+        for col in numeric_cols:
+            median_val = self.numeric_medians.get(col, df[col].median() if not df[col].dropna().empty else 0.0)
+            df[col] = df[col].fillna(median_val)
         categorical_cols = [c for c in df.columns if c not in numeric_cols]
         df[categorical_cols] = df[categorical_cols].fillna("unknown").astype(str).replace("", "unknown")
         return df

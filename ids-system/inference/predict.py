@@ -51,7 +51,12 @@ def load_heads(encoder_out_dim: int, ckpt_base: str, allow_demo: bool) -> dict:
     heads = {}
     for name, builder, task_dir in tasks:
         head = builder(embed_dim=encoder_out_dim)
-        ckpt = tf.train.latest_checkpoint(f"{ckpt_base}/{task_dir}") or tf.train.latest_checkpoint(f"./checkpoints/{task_dir}")
+        ckpt = (
+            tf.train.latest_checkpoint(f"{ckpt_base}/{task_dir}/best")
+            or tf.train.latest_checkpoint(f"{ckpt_base}/{task_dir}")
+            or tf.train.latest_checkpoint(f"./checkpoints/{task_dir}/best")
+            or tf.train.latest_checkpoint(f"./checkpoints/{task_dir}")
+        )
         if not ckpt:
             if not allow_demo:
                 raise FileNotFoundError(f"No checkpoint for {name}. Train the {task_dir} head first.")

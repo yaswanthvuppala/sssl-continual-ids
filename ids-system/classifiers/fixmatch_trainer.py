@@ -99,10 +99,11 @@ class FixMatchTrainer:
             focal_loss_l = self._focal_weighted_loss(y_l, logits_l, sample_weight=sw_l)
             loss_s = tf.reduce_mean(focal_loss_l)
             
-            # Unsupervised consistency path (standard CE, no class weighting)
+            # Unsupervised consistency path with class weighting
             emb_u_strong = self._encode(x_u_strong)
             logits_strong = self.head(emb_u_strong, training=True)
-            loss_u_per_sample = self.loss_fn(pseudo_labels, logits_strong)
+            sw_u = tf.gather(class_weight_tensor, tf.cast(pseudo_labels, tf.int32))
+            loss_u_per_sample = self.loss_fn(pseudo_labels, logits_strong) * sw_u
             loss_u = tf.reduce_mean(loss_u_per_sample * mask)
             
             total_loss = loss_s + lambda_u * loss_u
