@@ -303,11 +303,11 @@ def main():
 
     if encoder_path:
         import zipfile
+        import h5py
         if zipfile.is_zipfile(encoder_path):
             print(f"Encoder Keras 3 zip format detected. Loading weights manually.")
             import tempfile
             import shutil
-            import h5py
             temp_dir = tempfile.mkdtemp(dir=".")
             try:
                 with zipfile.ZipFile(encoder_path, 'r') as zip_ref:
@@ -363,6 +363,28 @@ def main():
             finally:
                 if os.path.exists(temp_dir):
                     shutil.rmtree(temp_dir)
+        elif h5py.is_hdf5(encoder_path):
+            print(f"Encoder HDF5 model_weights format detected. Loading weights into encoder.")
+            try:
+                with h5py.File(encoder_path, 'r') as f:
+                    mw = f['model_weights']
+                    input_dim = mw['dense']['dense']['kernel:0'].shape[0]
+                    encoder = build_flow_encoder(input_dim=input_dim)
+                    
+                    if 'dense' in mw:
+                        encoder.get_layer('dense').set_weights([mw['dense']['dense']['kernel:0'][()], mw['dense']['dense']['bias:0'][()]])
+                    if 'layer_normalization' in mw:
+                        encoder.get_layer('layer_normalization').set_weights([mw['layer_normalization']['layer_normalization']['gamma:0'][()], mw['layer_normalization']['layer_normalization']['beta:0'][()]])
+                    if 'dense_1' in mw:
+                        encoder.get_layer('dense_1').set_weights([mw['dense_1']['dense_1']['kernel:0'][()], mw['dense_1']['dense_1']['bias:0'][()]])
+                    if 'layer_normalization_1' in mw:
+                        encoder.get_layer('layer_normalization_1').set_weights([mw['layer_normalization_1']['layer_normalization_1']['gamma:0'][()], mw['layer_normalization_1']['layer_normalization_1']['beta:0'][()]])
+                    if 'embedding' in mw:
+                        encoder.get_layer('embedding').set_weights([mw['embedding']['embedding']['kernel:0'][()], mw['embedding']['embedding']['bias:0'][()]])
+                print(f"  Successfully loaded HDF5 encoder weights. Input dimension: {input_dim}")
+            except Exception as e:
+                print(f"[WARN] Failed to load HDF5 encoder weights: {e}. Attempting default load_model.")
+                encoder = tf.keras.models.load_model(encoder_path)
         else:
             encoder = tf.keras.models.load_model(encoder_path)
     else:
@@ -419,7 +441,11 @@ def main():
     task_names = ["intrusion", "dos", "port_scan"] if args.task == "all" else [args.task]
     for task_name in task_names:
         # Load task-specific preprocessor and label column if available
-        task_label_col = args.label_col if (args.label_col and args.task != "all") else ("Label" if task_name == "intrusion" else "AttackCategory")
+        if ds == "unsw":
+            task_label_col = "label" if task_name == "intrusion" else "attack_cat"
+        else:
+            task_label_col = "Label" if task_name == "intrusion" else "AttackCategory"
+            
         task_prep_path = f"{ckpt_base}/preprocessor.pkl" if task_name == "intrusion" else f"{ckpt_base}/preprocessor_{task_name}.pkl"
         if os.path.exists(task_prep_path):
             task_prep = FlowPreprocessor.load(task_prep_path)

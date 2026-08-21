@@ -24,7 +24,8 @@ class FixMatchTrainer:
                  class_weights: dict = None, focal_gamma: float = 2.0,
                  log_dir: str = None, ckpt_dir: str = None,
                  clip_norm: float = 1.0, max_class_weight: float = 50.0,
-                 weight_decay: float = 1e-4, min_mask_rate_threshold: float = 0.50):
+                 weight_decay: float = 1e-4, min_mask_rate_threshold: float = 0.50,
+                 unfreeze_encoder: bool = False):
         self.encoder = encoder
         self.head = head
         self.gpm = gpm
@@ -38,9 +39,10 @@ class FixMatchTrainer:
         self.weight_decay = weight_decay
         self.min_mask_rate_threshold = min_mask_rate_threshold
         self.lr = lr
+        self.unfreeze_encoder = unfreeze_encoder
         
-        # Ensure encoder is frozen
-        self.encoder.trainable = False
+        # Set encoder trainability based on unfreeze_encoder flag
+        self.encoder.trainable = unfreeze_encoder
         
         # SGD with momentum is standard for FixMatch, with global gradient clipping to stabilize training
         self.optimizer = tf.keras.optimizers.SGD(learning_rate=lr, momentum=0.9, nesterov=True, global_clipnorm=self.clip_norm)
@@ -123,7 +125,8 @@ class FixMatchTrainer:
             
             total_loss = loss_s + lambda_u * loss_u
             
-        grads = tape.gradient(total_loss, self.head.trainable_variables)
+        trainable_vars = (self.encoder.trainable_variables if self.unfreeze_encoder else []) + self.head.trainable_variables
+        grads = tape.gradient(total_loss, trainable_vars)
         return grads, loss_s, loss_u, total_loss, tf.reduce_mean(mask)
 
     def train_step(self, x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u: float = 1.0):
@@ -133,6 +136,7 @@ class FixMatchTrainer:
         grads, loss_s, loss_u, total_loss, mask_rate = self._compute_gradients(
             x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u
         )
+        trainable_vars = (self.encoder.trainable_variables if self.unfreeze_encoder else []) + self.head.trainable_variables
         
         # Check for NaN or Inf in grads or total_loss
         has_nan = False
@@ -155,13 +159,13 @@ class FixMatchTrainer:
 
         # GPM gradient projection runs in eager mode (needs .numpy())
         if self.gpm is not None:
-            grads = self.gpm.project_gradients(grads, self.head.trainable_variables)
+            grads = self.gpm.project_gradients(grads, trainable_vars)
             
-        self.optimizer.apply_gradients(zip(grads, self.head.trainable_variables))
+        self.optimizer.apply_gradients(zip(grads, trainable_vars))
         
         # Apply manual weight decay for SGD
         if self.weight_decay > 0:
-            for v in self.head.trainable_variables:
+            for v in trainable_vars:
                 if 'bias' not in v.name:
                     v.assign(v * (1.0 - self.lr * self.weight_decay))
         

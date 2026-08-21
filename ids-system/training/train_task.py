@@ -130,19 +130,18 @@ def load_frozen_encoder(path: str = "./checkpoints/encoder_frozen.keras") -> tf.
     if not os.path.exists(path):
         raise FileNotFoundError(f"Frozen encoder not found at {path}. Run train_ssl.py first.")
         
+    from encoder.flow_encoder import build_flow_encoder
     import zipfile
     if zipfile.is_zipfile(path):
         print(f"Encoder Keras 3 zip format detected. Loading weights manually.")
-        from encoder.flow_encoder import build_flow_encoder
         import tempfile
         import shutil
         import h5py
         temp_dir = tempfile.mkdtemp(dir=".")
         try:
-            with zipfile.ZipFile(path, 'r') as zip_ref:
-                weights_path = copy_keras_weights_from_zip(path, temp_dir)
-                with h5py.File(weights_path, 'r') as f:
-                    input_dim = f['layers/dense/vars/0'].shape[0]
+            weights_path = copy_keras_weights_from_zip(path, temp_dir)
+            with h5py.File(weights_path, 'r') as f:
+                input_dim = f['layers/dense/vars/0'].shape[0]
             
             model = build_flow_encoder(input_dim=input_dim)
             load_keras3_weights_manually(model, path)
@@ -154,9 +153,36 @@ def load_frozen_encoder(path: str = "./checkpoints/encoder_frozen.keras") -> tf.
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
 
-    model = tf.keras.models.load_model(path)
-    model.trainable = False
-    return model
+    import h5py
+    if h5py.is_hdf5(path):
+        print(f"Encoder HDF5 model_weights format detected. Loading weights into encoder.")
+        try:
+            with h5py.File(path, 'r') as f:
+                mw = f['model_weights']
+                input_dim = mw['dense']['dense']['kernel:0'].shape[0]
+                model = build_flow_encoder(input_dim=input_dim)
+                
+                if 'dense' in mw:
+                    model.get_layer('dense').set_weights([mw['dense']['dense']['kernel:0'][()], mw['dense']['dense']['bias:0'][()]])
+                if 'layer_normalization' in mw:
+                    model.get_layer('layer_normalization').set_weights([mw['layer_normalization']['layer_normalization']['gamma:0'][()], mw['layer_normalization']['layer_normalization']['beta:0'][()]])
+                if 'dense_1' in mw:
+                    model.get_layer('dense_1').set_weights([mw['dense_1']['dense_1']['kernel:0'][()], mw['dense_1']['dense_1']['bias:0'][()]])
+                if 'layer_normalization_1' in mw:
+                    model.get_layer('layer_normalization_1').set_weights([mw['layer_normalization_1']['layer_normalization_1']['gamma:0'][()], mw['layer_normalization_1']['layer_normalization_1']['beta:0'][()]])
+                if 'embedding_dense' in mw:
+                    model.get_layer('embedding_dense').set_weights([mw['embedding_dense']['embedding_dense']['kernel:0'][()], mw['embedding_dense']['embedding_dense']['bias:0'][()]])
+                model.trainable = False
+                return model
+        except Exception as e:
+            print(f"[WARN] Manual HDF5 weight loading failed: {e}. Trying standard load_model...")
+
+    try:
+        model = tf.keras.models.load_model(path)
+        model.trainable = False
+        return model
+    except Exception as e:
+        raise RuntimeError(f"Could not load encoder from {path}: {e}")
 
 
 def build_task_head(task: str, embed_dim: int) -> tf.keras.Model:
@@ -212,6 +238,12 @@ def main():
                         help="Use class-balanced batching (50/50 per batch)")
     parser.add_argument("--warmup_epochs", type=int, default=3,
                         help="Number of warmup epochs with no pseudo-label loss")
+    parser.add_argument("--label_ratio", type=float, default=0.20,
+                        help="Fraction of training data to use as labeled (0.05=5%%, 0.10=10%%, 0.20=20%%, 0.50=50%%, 1.0=100%%)")
+    parser.add_argument("--encoder_path", type=str, default=None,
+                        help="Path to pre-trained frozen encoder .keras file")
+    parser.add_argument("--unfreeze_encoder", action="store_true",
+                        help="Unfreeze encoder weights during task training to allow representation fine-tuning")
     args = parser.parse_args()
 
     print(f"Initializing Continual Learning for Task: {args.task}")
@@ -237,8 +269,35 @@ def main():
             args.preprocessor_path = f"{ckpt_base}/preprocessor_{args.task}.pkl"
     print(f"Using preprocessor: {args.preprocessor_path}")
 
-    # Load frozen encoder
-    encoder = load_frozen_encoder(f"{ckpt_base}/encoder_frozen.keras")
+    # Resolve encoder path with smart fallbacks
+    enc_path = args.encoder_path
+    if enc_path is None or not os.path.exists(enc_path):
+        base_ds = args.dataset if args.dataset else args.dataset_name.split("_")[0]
+        candidates = [
+            f"{ckpt_base}/encoder_frozen.keras",
+            f"./checkpoints/{base_ds}/encoder_frozen.keras",
+            f"../logs_Experimental/{base_ds}/encoder_frozen.keras",
+        ]
+        for cand in candidates:
+            if os.path.exists(cand):
+                enc_path = cand
+                break
+
+    if enc_path is None or not os.path.exists(enc_path):
+        raise FileNotFoundError(
+            f"Frozen encoder not found at {ckpt_base}/encoder_frozen.keras. "
+            f"Please run train_ssl.py first or specify --encoder_path."
+        )
+
+    print(f"Loading encoder from: {enc_path}")
+    encoder = load_frozen_encoder(enc_path)
+
+    # Save a copy in ckpt_base if it's not already there
+    target_enc_copy = f"{ckpt_base}/encoder_frozen.keras"
+    if not os.path.exists(target_enc_copy) and enc_path != target_enc_copy:
+        import shutil
+        shutil.copyfile(enc_path, target_enc_copy)
+        print(f"Saved encoder copy to {target_enc_copy}")
     
     # Initialize GPM only for continual task heads. The generic intrusion task is a single binary head.
     memory_bank = None
@@ -346,12 +405,21 @@ def main():
     np.savez(val_save_path, val_x=X_val, val_y=y_val)
     print(f"Validation data saved to {val_save_path} ({len(X_val)} samples)")
     
-    # 2. Split train set into labeled (20%) and unlabeled (80%) subsets to prevent X_u = X_l feedback leakage
-    X_l_sub, X_u_sub, y_l_binary, _ = train_test_split(
-        X_train_full, y_train_full, test_size=0.80, random_state=42, stratify=y_train_full
-    )
-    X_l = X_l_sub
-    X_u = X_u_sub
+    # 2. Split train set into labeled and unlabeled subsets
+    label_ratio = args.label_ratio
+    if label_ratio >= 1.0:
+        # 100% labeled: use all training data as labeled, duplicate as unlabeled for FixMatch
+        X_l = X_train_full
+        y_l_binary = y_train_full
+        X_u = X_train_full  # unlabeled path still needs data for FixMatch pipeline
+        print(f"[INFO] Using 100% labeled data ({len(X_l)} samples). Unlabeled set mirrors labeled for FixMatch compatibility.")
+    else:
+        unlabeled_fraction = 1.0 - label_ratio
+        X_l_sub, X_u_sub, y_l_binary, _ = train_test_split(
+            X_train_full, y_train_full, test_size=unlabeled_fraction, random_state=42, stratify=y_train_full
+        )
+        X_l = X_l_sub
+        X_u = X_u_sub
     
     if args.max_labeled is not None:
         X_l = X_l[:args.max_labeled]
@@ -408,7 +476,8 @@ def main():
         clip_norm=1.0,
         max_class_weight=10.0,
         weight_decay=1e-4,
-        min_mask_rate_threshold=0.50
+        min_mask_rate_threshold=0.50,
+        unfreeze_encoder=args.unfreeze_encoder
     )
     trainer.train(labeled_ds, unlabeled_ds, task_name=args.task, epochs=args.epochs,
                   warmup_epochs=args.warmup_epochs, val_data=(X_val, y_val), patience=5)
@@ -421,17 +490,18 @@ def main():
         
             # We use a combined model just to pass to GPM which expects a single callable.
             class TaskModel(tf.keras.Model):
-                def __init__(self, enc, hd):
+                def __init__(self, enc, hd, unfreeze=False):
                     super().__init__()
                     self.enc = enc
                     self.hd = hd
+                    self.unfreeze = unfreeze
                 @property
                 def trainable_variables(self):
-                    return self.hd.trainable_variables
+                    return (self.enc.trainable_variables if self.unfreeze else []) + self.hd.trainable_variables
                 def call(self, x, training=False):
                     return self.hd(self.enc(x, training=False), training=training)
                 
-            combined_model = TaskModel(encoder, head)
+            combined_model = TaskModel(encoder, head, unfreeze=args.unfreeze_encoder)
             gpm.capture_gradient_basis(
                 combined_model,
                 labeled_ds,
