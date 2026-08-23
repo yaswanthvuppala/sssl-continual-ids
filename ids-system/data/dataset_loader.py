@@ -158,20 +158,36 @@ class FlowDatasetLoader:
             header=None,
             compression="infer",
         )
-        if is_partitioned:
-            split_idx = int(len(df) * 0.8)
-            if split == "train":
-                df = df.iloc[:split_idx].reset_index(drop=True)
-            else:
-                df = df.iloc[split_idx:].reset_index(drop=True)
-            print(f"[INFO] Partitioned {split} subset: {len(df):,} samples")
-
+        # Normalize attack labels first (needed for stratification)
         attack_labels = (
             df["AttackLabel"].astype(str).str.strip().str.rstrip(".").str.lower()
         )
         df["AttackLabel"] = attack_labels
         df["Label"] = np.where(attack_labels.eq("normal"), "normal", "attack")
         df["AttackCategory"] = attack_labels.map(self._kdd_attack_category)
+
+        if is_partitioned:
+            # Use stratified split to ensure all attack categories appear in both splits
+            try:
+                train_df, test_df = train_test_split(
+                    df, test_size=0.2, random_state=42, stratify=df["AttackCategory"]
+                )
+            except ValueError:
+                # Fallback: some categories may have only 1 sample, use AttackLabel
+                print("[WARN] Stratified split on AttackCategory failed (rare classes). "
+                      "Falling back to stratification on Label column.")
+                train_df, test_df = train_test_split(
+                    df, test_size=0.2, random_state=42, stratify=df["Label"]
+                )
+            if split == "train":
+                df = train_df.reset_index(drop=True)
+            else:
+                df = test_df.reset_index(drop=True)
+            print(f"[INFO] Stratified {split} subset: {len(df):,} samples")
+            # Log class distribution for verification
+            cat_counts = df["AttackCategory"].value_counts()
+            print(f"[INFO] AttackCategory distribution in {split} split:\n{cat_counts.to_string()}")
+
         return df
 
     def _resolve_kdd_path(self, split: str) -> tuple[Path, bool]:

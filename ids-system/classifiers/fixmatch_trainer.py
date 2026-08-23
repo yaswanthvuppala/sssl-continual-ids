@@ -274,6 +274,8 @@ class FixMatchTrainer:
         patience_counter = 0
         last_mask_rate = 1.0
         
+        lambda_ramp_epochs = 5  # Gradually ramp lambda_u over this many epochs after warmup
+        
         for epoch in range(epochs):
             # Curriculum check: disable pseudo-labels during warmup OR if previous mask rate was too low
             if epoch < warmup_epochs:
@@ -282,7 +284,11 @@ class FixMatchTrainer:
                 effective_lambda = 0.0
                 print(f"[CURRICULUM] Mask rate ({last_mask_rate:.2f}) < threshold ({self.min_mask_rate_threshold:.2f}). Temporarily disabling pseudo-labels for epoch {epoch+1}.")
             else:
-                effective_lambda = lambda_u
+                # Gradual ramp-up: linearly increase lambda_u over lambda_ramp_epochs
+                ramp_progress = min(1.0, (epoch - warmup_epochs + 1) / lambda_ramp_epochs)
+                effective_lambda = lambda_u * ramp_progress
+                if ramp_progress < 1.0:
+                    print(f"[RAMP] lambda_u = {effective_lambda:.3f} (ramp {ramp_progress:.0%} of {lambda_u})")
 
             metrics = {"loss_s": 0.0, "loss_u": 0.0, "total_loss": 0.0, "mask_rate": 0.0}
             steps = 0
