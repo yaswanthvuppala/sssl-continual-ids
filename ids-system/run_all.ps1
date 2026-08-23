@@ -4,7 +4,9 @@ param (
     [int]$task_epochs = 20,
     [int]$gpm_epochs = 10,
     [string[]]$datasets = @("unsw", "kddcup99", "cicids2017"),
-    [bool]$retrain = $true
+    [bool]$retrain = $true,
+    [bool]$unfreeze_encoder = $true,
+    [float]$encoder_lr = 0.003
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,7 +30,16 @@ if ($null -eq $env:VIRTUAL_ENV) {
 foreach ($dataset in $datasets) {
     Write-Host "`n==========================================" -ForegroundColor Green
     Write-Host "STARTING BENCHMARK FOR DATASET: $dataset" -ForegroundColor Green
-    Write-Host "==========================================`n" -ForegroundColor Green
+    Write-Host "==========================================" -ForegroundColor Green
+
+    # Build encoder unfreeze flags for train_task.py
+    $unfreezeArgs = @()
+    if ($unfreeze_encoder) {
+        $unfreezeArgs = @("--unfreeze_encoder", "--encoder_lr", "$encoder_lr")
+        Write-Host "  Encoder: UNFROZEN (lr=$encoder_lr)" -ForegroundColor Cyan
+    } else {
+        Write-Host "  Encoder: FROZEN" -ForegroundColor Cyan
+    }
 
     $ckptDir = "checkpoints/$dataset"
     if ($retrain -and (Test-Path $ckptDir)) {
@@ -47,21 +58,26 @@ foreach ($dataset in $datasets) {
 
         # 2. Train, Evaluate & Visualize Intrusion
         Write-Host "[2/4] Running Intrusion Task..." -ForegroundColor Yellow
-        python training/train_task.py --task intrusion --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" --label_col "label" --epochs $task_epochs --dataset_name unsw
+        python training/train_task.py --task intrusion --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" --label_col "label" --epochs $task_epochs --dataset_name unsw @unfreezeArgs
         python training/evaluate.py --task intrusion --test_csv "../IDS-UNSW_NB/UNSW_NB15_testing-set.csv" --label_col "label" --dataset_name unsw
         python training/visualize_metrics.py --task intrusion --dataset_name unsw
 
         # 3. Train, Evaluate & Visualize DoS
         Write-Host "[3/4] Running DoS Task (Continual GPM)..." -ForegroundColor Yellow
-        python training/train_task.py --task dos --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" --label_col "attack_cat" --epochs $gpm_epochs --dataset_name unsw
+        python training/train_task.py --task dos --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" --label_col "attack_cat" --epochs $gpm_epochs --dataset_name unsw @unfreezeArgs
         python training/evaluate.py --task dos --test_csv "../IDS-UNSW_NB/UNSW_NB15_testing-set.csv" --label_col "attack_cat" --dataset_name unsw
         python training/visualize_metrics.py --task dos --dataset_name unsw
 
         # 4. Train, Evaluate & Visualize Port Scan
         Write-Host "[4/4] Running Port Scan Task (Continual GPM)..." -ForegroundColor Yellow
-        python training/train_task.py --task port_scan --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" --label_col "attack_cat" --epochs $gpm_epochs --dataset_name unsw
+        python training/train_task.py --task port_scan --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" --label_col "attack_cat" --epochs $gpm_epochs --dataset_name unsw @unfreezeArgs
         python training/evaluate.py --task port_scan --test_csv "../IDS-UNSW_NB/UNSW_NB15_testing-set.csv" --label_col "attack_cat" --dataset_name unsw
         python training/visualize_metrics.py --task port_scan --dataset_name unsw
+
+        # 5. Compute Transfer Matrix & BWT
+        $transferMode = if ($unfreeze_encoder) { "--unfrozen" } else { "" }
+        python training/compute_transfer.py --dataset_name unsw $transferMode
+
 
     } elseif ($dataset -eq "kddcup99") {
         # 1. SSL Pretraining
@@ -74,21 +90,26 @@ foreach ($dataset in $datasets) {
 
         # 2. Train, Evaluate & Visualize Intrusion
         Write-Host "[2/4] Running Intrusion Task..." -ForegroundColor Yellow
-        python training/train_task.py --task intrusion --dataset kddcup99 --data_path "../KDDCUP99" --label_col "Label" --epochs $task_epochs --dataset_name kddcup99
+        python training/train_task.py --task intrusion --dataset kddcup99 --data_path "../KDDCUP99" --label_col "Label" --epochs $task_epochs --dataset_name kddcup99 @unfreezeArgs
         python training/evaluate.py --task intrusion --dataset kddcup99 --data_path "../KDDCUP99" --label_col "Label" --dataset_name kddcup99
         python training/visualize_metrics.py --task intrusion --dataset_name kddcup99
 
         # 3. Train, Evaluate & Visualize DoS
         Write-Host "[3/4] Running DoS Task (Continual GPM)..." -ForegroundColor Yellow
-        python training/train_task.py --task dos --dataset kddcup99 --data_path "../KDDCUP99" --label_col "AttackCategory" --epochs $gpm_epochs --dataset_name kddcup99
+        python training/train_task.py --task dos --dataset kddcup99 --data_path "../KDDCUP99" --label_col "AttackCategory" --epochs $gpm_epochs --dataset_name kddcup99 @unfreezeArgs
         python training/evaluate.py --task dos --dataset kddcup99 --data_path "../KDDCUP99" --label_col "AttackCategory" --dataset_name kddcup99
         python training/visualize_metrics.py --task dos --dataset_name kddcup99
 
         # 4. Train, Evaluate & Visualize Port Scan
         Write-Host "[4/4] Running Port Scan Task (Continual GPM)..." -ForegroundColor Yellow
-        python training/train_task.py --task port_scan --dataset kddcup99 --data_path "../KDDCUP99" --label_col "AttackCategory" --epochs $gpm_epochs --dataset_name kddcup99
+        python training/train_task.py --task port_scan --dataset kddcup99 --data_path "../KDDCUP99" --label_col "AttackCategory" --epochs $gpm_epochs --dataset_name kddcup99 @unfreezeArgs
         python training/evaluate.py --task port_scan --dataset kddcup99 --data_path "../KDDCUP99" --label_col "AttackCategory" --dataset_name kddcup99
         python training/visualize_metrics.py --task port_scan --dataset_name kddcup99
+
+        # 5. Compute Transfer Matrix & BWT
+        $transferMode = if ($unfreeze_encoder) { "--unfrozen" } else { "" }
+        python training/compute_transfer.py --dataset_name kddcup99 $transferMode
+
 
     } elseif ($dataset -eq "cicids2017") {
         # 1. SSL Pretraining
@@ -101,21 +122,25 @@ foreach ($dataset in $datasets) {
 
         # 2. Train, Evaluate & Visualize Intrusion
         Write-Host "[2/4] Running Intrusion Task..." -ForegroundColor Yellow
-        python training/train_task.py --task intrusion --dataset cicids2017 --data_path "../CICIDS2017" --label_col "Label" --epochs $task_epochs --dataset_name cicids2017
+        python training/train_task.py --task intrusion --dataset cicids2017 --data_path "../CICIDS2017" --label_col "Label" --epochs $task_epochs --dataset_name cicids2017 @unfreezeArgs
         python training/evaluate.py --task intrusion --dataset cicids2017 --data_path "../CICIDS2017" --label_col "Label" --dataset_name cicids2017
         python training/visualize_metrics.py --task intrusion --dataset_name cicids2017
 
         # 3. Train, Evaluate & Visualize DoS
         Write-Host "[3/4] Running DoS Task (Continual GPM)..." -ForegroundColor Yellow
-        python training/train_task.py --task dos --dataset cicids2017 --data_path "../CICIDS2017" --label_col "AttackCategory" --epochs $gpm_epochs --dataset_name cicids2017
+        python training/train_task.py --task dos --dataset cicids2017 --data_path "../CICIDS2017" --label_col "AttackCategory" --epochs $gpm_epochs --dataset_name cicids2017 @unfreezeArgs
         python training/evaluate.py --task dos --dataset cicids2017 --data_path "../CICIDS2017" --label_col "AttackCategory" --dataset_name cicids2017
         python training/visualize_metrics.py --task dos --dataset_name cicids2017
 
         # 4. Train, Evaluate & Visualize Port Scan
         Write-Host "[4/4] Running Port Scan Task (Continual GPM)..." -ForegroundColor Yellow
-        python training/train_task.py --task port_scan --dataset cicids2017 --data_path "../CICIDS2017" --label_col "AttackCategory" --epochs $gpm_epochs --dataset_name cicids2017
+        python training/train_task.py --task port_scan --dataset cicids2017 --data_path "../CICIDS2017" --label_col "AttackCategory" --epochs $gpm_epochs --dataset_name cicids2017 @unfreezeArgs
         python training/evaluate.py --task port_scan --dataset cicids2017 --data_path "../CICIDS2017" --label_col "AttackCategory" --dataset_name cicids2017
         python training/visualize_metrics.py --task port_scan --dataset_name cicids2017
+
+        # 5. Compute Transfer Matrix & BWT
+        $transferMode = if ($unfreeze_encoder) { "--unfrozen" } else { "" }
+        python training/compute_transfer.py --dataset_name cicids2017 $transferMode
     }
 }
 Write-Host "`nAll datasets and task heads processed successfully!" -ForegroundColor Green

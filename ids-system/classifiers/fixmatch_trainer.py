@@ -24,7 +24,8 @@ class FixMatchTrainer:
                  class_weights: dict = None, focal_gamma: float = 2.0,
                  log_dir: str = None, ckpt_dir: str = None,
                  clip_norm: float = 1.0, max_class_weight: float = 50.0,
-                 weight_decay: float = 1e-4, min_mask_rate_threshold: float = 0.50):
+                 weight_decay: float = 1e-4, min_mask_rate_threshold: float = 0.50,
+                 unfreeze_encoder: bool = False, encoder_lr: float = None):
         self.encoder = encoder
         self.head = head
         self.gpm = gpm
@@ -38,27 +39,50 @@ class FixMatchTrainer:
         self.weight_decay = weight_decay
         self.min_mask_rate_threshold = min_mask_rate_threshold
         self.lr = lr
+        self.unfreeze_encoder = unfreeze_encoder
         
-        # Ensure encoder is frozen
-        self.encoder.trainable = False
+        # Encoder mode: frozen (default) or unfrozen for end-to-end fine-tuning
+        if unfreeze_encoder:
+            self.encoder.trainable = True
+            self.encoder_lr = encoder_lr if encoder_lr is not None else (lr / 10.0)
+            self.encoder_optimizer = tf.keras.optimizers.SGD(
+                learning_rate=self.encoder_lr, momentum=0.9, nesterov=True,
+                global_clipnorm=self.clip_norm
+            )
+        else:
+            self.encoder.trainable = False
+            self.encoder_lr = 0.0
+            self.encoder_optimizer = None
         
         # SGD with momentum is standard for FixMatch, with global gradient clipping to stabilize training
         self.optimizer = tf.keras.optimizers.SGD(learning_rate=lr, momentum=0.9, nesterov=True, global_clipnorm=self.clip_norm)
         self.loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction="none")
 
-        self.checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, head=self.head)
+        # Checkpoints include encoder when unfrozen
+        if unfreeze_encoder:
+            self.checkpoint = tf.train.Checkpoint(
+                optimizer=self.optimizer, head=self.head,
+                encoder=self.encoder, encoder_optimizer=self.encoder_optimizer
+            )
+        else:
+            self.checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, head=self.head)
         
         # Best model checkpoint manager
         if self.ckpt_dir:
             self.best_ckpt_dir = os.path.join(self.ckpt_dir, "best")
-            self.best_checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, head=self.head)
+            if unfreeze_encoder:
+                self.best_checkpoint = tf.train.Checkpoint(
+                    optimizer=self.optimizer, head=self.head,
+                    encoder=self.encoder, encoder_optimizer=self.encoder_optimizer
+                )
+            else:
+                self.best_checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, head=self.head)
             self.best_ckpt_manager = tf.train.CheckpointManager(self.best_checkpoint, self.best_ckpt_dir, max_to_keep=1)
         else:
             self.best_ckpt_manager = None
 
-    @tf.function
-    def _encode(self, x):
-        return self.encoder(x, training=False)
+    def _encode(self, x, training=False):
+        return self.encoder(x, training=training)
 
     def _focal_weighted_loss(self, y_true, logits, sample_weight=None):
         """
@@ -81,14 +105,13 @@ class FixMatchTrainer:
 
         return loss
 
-    @tf.function
     def _compute_gradients(self, x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u: float = 1.0):
         """
-        Forward pass + loss + gradients (runs inside tf.function graph for speed).
+        Forward pass + loss + gradients.
         GPM projection is intentionally excluded — it needs eager .numpy() calls.
         """
-        # 1. Pseudo-label generation (no gradient)
-        emb_u_weak = self._encode(x_u_weak)
+        # 1. Pseudo-label generation (no gradient, always in eval mode)
+        emb_u_weak = self._encode(x_u_weak, training=False)
         logits_weak = self.head(emb_u_weak, training=False)
         probs_weak = tf.nn.softmax(logits_weak)
         
@@ -104,9 +127,12 @@ class FixMatchTrainer:
                                          tf.cast(pseudo_labels, tf.int32))
         mask = tf.cast(max_probs >= per_sample_threshold, tf.float32)
         
+        # Training mode for encoder: True when unfrozen, False when frozen
+        enc_training = self.unfreeze_encoder
+        
         with tf.GradientTape() as tape:
             # Supervised path — focal loss with class weighting
-            emb_l = self._encode(x_l)
+            emb_l = self._encode(x_l, training=enc_training)
             logits_l = self.head(emb_l, training=True)
 
             # Build per-sample weights from class weights
@@ -115,7 +141,7 @@ class FixMatchTrainer:
             loss_s = tf.reduce_mean(focal_loss_l)
             
             # Unsupervised consistency path with class weighting
-            emb_u_strong = self._encode(x_u_strong)
+            emb_u_strong = self._encode(x_u_strong, training=enc_training)
             logits_strong = self.head(emb_u_strong, training=True)
             sw_u = tf.gather(class_weight_tensor, tf.cast(pseudo_labels, tf.int32))
             loss_u_per_sample = self.loss_fn(pseudo_labels, logits_strong) * sw_u
@@ -123,7 +149,13 @@ class FixMatchTrainer:
             
             total_loss = loss_s + lambda_u * loss_u
             
-        grads = tape.gradient(total_loss, self.head.trainable_variables)
+        # Compute gradients for all trainable variables
+        if self.unfreeze_encoder:
+            all_vars = list(self.encoder.trainable_variables) + list(self.head.trainable_variables)
+        else:
+            all_vars = list(self.head.trainable_variables)
+        
+        grads = tape.gradient(total_loss, all_vars)
         return grads, loss_s, loss_u, total_loss, tf.reduce_mean(mask)
 
     def train_step(self, x_l, y_l, x_u_weak, x_u_strong, class_weight_tensor, lambda_u: float = 1.0):
@@ -155,15 +187,35 @@ class FixMatchTrainer:
 
         # GPM gradient projection runs in eager mode (needs .numpy())
         if self.gpm is not None:
-            grads = self.gpm.project_gradients(grads, self.head.trainable_variables)
-            
-        self.optimizer.apply_gradients(zip(grads, self.head.trainable_variables))
+            if self.unfreeze_encoder:
+                all_vars = list(self.encoder.trainable_variables) + list(self.head.trainable_variables)
+            else:
+                all_vars = list(self.head.trainable_variables)
+            grads = self.gpm.project_gradients(grads, all_vars)
+        
+        # Apply gradients with separate optimizers when encoder is unfrozen
+        if self.unfreeze_encoder:
+            n_enc = len(self.encoder.trainable_variables)
+            encoder_grads = grads[:n_enc]
+            head_grads = grads[n_enc:]
+            self.encoder_optimizer.apply_gradients(
+                zip(encoder_grads, self.encoder.trainable_variables)
+            )
+            self.optimizer.apply_gradients(
+                zip(head_grads, self.head.trainable_variables)
+            )
+        else:
+            self.optimizer.apply_gradients(zip(grads, self.head.trainable_variables))
         
         # Apply manual weight decay for SGD
         if self.weight_decay > 0:
             for v in self.head.trainable_variables:
                 if 'bias' not in v.name:
                     v.assign(v * (1.0 - self.lr * self.weight_decay))
+            if self.unfreeze_encoder:
+                for v in self.encoder.trainable_variables:
+                    if 'bias' not in v.name:
+                        v.assign(v * (1.0 - self.encoder_lr * self.weight_decay))
         
         return {
             "loss_s": loss_s,
@@ -175,7 +227,7 @@ class FixMatchTrainer:
 
     def evaluate_val(self, val_features: np.ndarray, val_labels: np.ndarray) -> dict:
         """Evaluate performance on validation set."""
-        emb = self._encode(tf.constant(val_features, dtype=tf.float32)).numpy()
+        emb = self._encode(tf.constant(val_features, dtype=tf.float32), training=False).numpy()
         logits = self.head(tf.constant(emb, dtype=tf.float32), training=False).numpy()
         probs = tf.nn.softmax(logits, axis=-1).numpy()
         preds = np.argmax(probs, axis=-1)

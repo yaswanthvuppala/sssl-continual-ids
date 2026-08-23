@@ -24,6 +24,12 @@ class TestKDDCup99Loader(unittest.TestCase):
         self.assertEqual(train_df["AttackCategory"].tolist(), ["normal", "dos"])
         self.assertEqual(test_df["AttackCategory"].tolist(), ["probe"])
 
+    def test_fallback_parent_resolution(self):
+        # Non-existent subfolder should fallback to parent if files are in parent
+        loader = FlowDatasetLoader(str(FIXTURES / "kddcup99" / "non_existent_folder"))
+        train_df = loader.load_dataset("kddcup99", "train")
+        self.assertEqual(len(train_df), 2)
+
 
 class TestCICIDS2017Loader(unittest.TestCase):
     def test_split_is_deterministic_stratified_and_disjoint(self):

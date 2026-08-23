@@ -459,6 +459,34 @@ def plot_threshold_analysis(task_name="intrusion", dataset_name="default", log_b
 
 
 # ═══════════════════════════════════════════════════════════
+# 5. Transfer Matrix & Continual Learning Plots
+# ═══════════════════════════════════════════════════════════
+def plot_transfer_metrics(dataset_name="default", log_base=None, plot_dir=None):
+    """Plot Transfer Matrix Heatmap, Task Performance Over Time, and Dashboard from continual_transfer.json."""
+    print("\n[5/5] Generating Continual Transfer Matrix & Forgetting Curves...")
+    from training.compute_transfer import (
+        plot_transfer_matrix_heatmap,
+        plot_task_performance_over_time,
+        plot_transfer_dashboard
+    )
+    log_base = log_base or f"./logs/{dataset_name}"
+    plot_dir = plot_dir or f"{log_base}/plots"
+    transfer_file = f"{log_base}/eval/continual_transfer.json"
+    if not os.path.exists(transfer_file):
+        print(f"  No continual transfer metrics found at {transfer_file}. Skipping transfer plots.")
+        return
+    with open(transfer_file, "r") as f:
+        data = json.load(f)
+    matrix = data.get("results_matrix", {})
+    bwt = data.get("bwt", 0.0)
+    mode = data.get("mode", "frozen")
+    task_order = data.get("task_order", ["intrusion", "dos", "port_scan"])
+    plot_transfer_matrix_heatmap(matrix, bwt, dataset_name, task_order, mode, [plot_dir])
+    plot_task_performance_over_time(matrix, dataset_name, task_order, mode, [plot_dir])
+    plot_transfer_dashboard(matrix, bwt, dataset_name, task_order, mode, [plot_dir])
+
+
+# ═══════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════
 def generate_all_plots(task_name=None, dataset_name="default"):
@@ -479,6 +507,7 @@ def generate_all_plots(task_name=None, dataset_name="default"):
     plot_memory_hierarchy(dataset_name=dataset_name, ckpt_base=ckpt_base, plot_dir=plot_dir)
     plot_evaluation_metrics(task, dataset_name=dataset_name, log_base=log_base, plot_dir=plot_dir)
     plot_threshold_analysis(task, dataset_name=dataset_name, log_base=log_base, plot_dir=plot_dir)
+    plot_transfer_metrics(dataset_name=dataset_name, log_base=log_base, plot_dir=plot_dir)
 
     print(f"\n{'='*60}")
     print(f"  All plots saved to {os.path.abspath(plot_dir)}")
