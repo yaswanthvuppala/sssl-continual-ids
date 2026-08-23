@@ -49,7 +49,7 @@ class TemperatureScaler:
 
         # Run optimization
         initial_T = [self.temperature]
-        res = minimize(nll_loss, initial_T, method='L-BFGS-B', bounds=[(1e-3, 10.0)])
+        res = minimize(nll_loss, initial_T, method='L-BFGS-B', bounds=[(1e-3, 50.0)])
         if res.success:
             self.temperature = float(res.x[0])
         else:
