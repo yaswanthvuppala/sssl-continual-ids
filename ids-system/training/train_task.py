@@ -243,7 +243,9 @@ def main():
     parser.add_argument("--encoder_path", type=str, default=None,
                         help="Path to pre-trained frozen encoder .keras file")
     parser.add_argument("--unfreeze_encoder", action="store_true",
-                        help="Unfreeze encoder weights during task training to allow representation fine-tuning")
+                        help="Unfreeze encoder for end-to-end fine-tuning with GPM protection")
+    parser.add_argument("--encoder_lr", type=float, default=None,
+                        help="Learning rate for encoder when unfrozen (default: head_lr / 10)")
     args = parser.parse_args()
 
     print(f"Initializing Continual Learning for Task: {args.task}")
@@ -299,13 +301,28 @@ def main():
         shutil.copyfile(enc_path, target_enc_copy)
         print(f"Saved encoder copy to {target_enc_copy}")
     
-    # Initialize GPM only for continual task heads. The generic intrusion task is a single binary head.
-    memory_bank = None
-    gpm = None
-    if args.task != "intrusion":
-        memory_bank = MemoryBank(save_dir=f"{ckpt_base}/gpm")
-        memory_bank.load()
-        gpm = GradientProjectionMemory(threshold=0.97, memory_bank=memory_bank)
+    # When unfreezing, load encoder weights from previous task's snapshot if available
+    if args.unfreeze_encoder:
+        task_order = ["intrusion", "dos", "port_scan"]
+        task_idx = task_order.index(args.task)
+        if task_idx > 0:
+            prev_task = task_order[task_idx - 1]
+            prev_snapshot = f"{ckpt_base}/snapshots/after_{prev_task}/encoder"
+            prev_ckpt = tf.train.latest_checkpoint(prev_snapshot)
+            if prev_ckpt:
+                print(f"Loading encoder from previous snapshot: {prev_ckpt}")
+                tf.train.Checkpoint(encoder=encoder).restore(prev_ckpt).expect_partial()
+            else:
+                print(f"[WARN] No previous snapshot found at {prev_snapshot}, using SSL weights")
+        encoder.trainable = True
+        print(f"Encoder UNFROZEN for end-to-end fine-tuning (encoder_lr={args.encoder_lr or 0.003})")
+    
+    # Initialize GPM for ALL tasks (intrusion included for gradient basis capture).
+    # For intrusion (first task), projection is a no-op with an empty bank,
+    # but capture is needed to protect it from subsequent tasks.
+    memory_bank = MemoryBank(save_dir=f"{ckpt_base}/gpm")
+    memory_bank.load()
+    gpm = GradientProjectionMemory(threshold=0.97, memory_bank=memory_bank)
     
     # Initialize Head
     head = build_task_head(args.task, embed_dim=encoder.output_shape[-1])
@@ -477,31 +494,35 @@ def main():
         max_class_weight=10.0,
         weight_decay=1e-4,
         min_mask_rate_threshold=0.50,
-        unfreeze_encoder=args.unfreeze_encoder
+        unfreeze_encoder=args.unfreeze_encoder,
+        encoder_lr=args.encoder_lr,
     )
     trainer.train(labeled_ds, unlabeled_ds, task_name=args.task, epochs=args.epochs,
                   warmup_epochs=args.warmup_epochs, val_data=(X_val, y_val), patience=5)
     
-    # After training, capture the gradients for this task to protect it in the future
+    # After training, capture the gradient basis for this task to protect it from future tasks
     if gpm is not None and memory_bank is not None:
         print(f"Capturing GPM basis for {args.task}...")
         try:
             loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-        
-            # We use a combined model just to pass to GPM which expects a single callable.
+
+            # Combined model wrapper for GPM; exposes encoder variables when unfrozen.
             class TaskModel(tf.keras.Model):
-                def __init__(self, enc, hd, unfreeze=False):
+                def __init__(self, enc, hd, include_encoder=False):
                     super().__init__()
                     self.enc = enc
                     self.hd = hd
-                    self.unfreeze = unfreeze
+                    self.include_encoder = include_encoder
                 @property
                 def trainable_variables(self):
-                    return (self.enc.trainable_variables if self.unfreeze else []) + self.hd.trainable_variables
+                    if self.include_encoder and self.enc.trainable:
+                        return list(self.enc.trainable_variables) + list(self.hd.trainable_variables)
+                    return list(self.hd.trainable_variables)
                 def call(self, x, training=False):
-                    return self.hd(self.enc(x, training=False), training=training)
-                
-            combined_model = TaskModel(encoder, head, unfreeze=args.unfreeze_encoder)
+                    enc_training = training and self.include_encoder
+                    return self.hd(self.enc(x, training=enc_training), training=training)
+
+            combined_model = TaskModel(encoder, head, include_encoder=args.unfreeze_encoder)
             gpm.capture_gradient_basis(
                 combined_model,
                 labeled_ds,
@@ -511,6 +532,15 @@ def main():
             memory_bank.save()
         except Exception as e:
             print(f"[ERROR] Failed to capture GPM basis for task {args.task}: {e}")
+
+    # Save encoder snapshot for transfer matrix computation
+    if args.unfreeze_encoder:
+        snapshot_dir = f"{ckpt_base}/snapshots/after_{args.task}/encoder"
+        os.makedirs(snapshot_dir, exist_ok=True)
+        encoder_ckpt = tf.train.Checkpoint(encoder=encoder)
+        encoder_mgr = tf.train.CheckpointManager(encoder_ckpt, snapshot_dir, max_to_keep=1)
+        encoder_mgr.save()
+        print(f"Encoder snapshot saved to {snapshot_dir}/")
     
     print(f"Pipeline for {args.task} completed successfully.")
 

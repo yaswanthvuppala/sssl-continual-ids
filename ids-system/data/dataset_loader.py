@@ -150,7 +150,7 @@ class FlowDatasetLoader:
         return df
 
     def _load_kddcup99(self, split: str) -> pd.DataFrame:
-        filepath = self._resolve_kdd_path(split)
+        filepath, is_partitioned = self._resolve_kdd_path(split)
         print(f"Loading KDD Cup 99 {split} data from {filepath}...")
         df = pd.read_csv(
             filepath,
@@ -158,6 +158,13 @@ class FlowDatasetLoader:
             header=None,
             compression="infer",
         )
+        if is_partitioned:
+            split_idx = int(len(df) * 0.8)
+            if split == "train":
+                df = df.iloc[:split_idx].reset_index(drop=True)
+            else:
+                df = df.iloc[split_idx:].reset_index(drop=True)
+            print(f"[INFO] Partitioned {split} subset: {len(df):,} samples")
 
         attack_labels = (
             df["AttackLabel"].astype(str).str.strip().str.rstrip(".").str.lower()
@@ -167,10 +174,10 @@ class FlowDatasetLoader:
         df["AttackCategory"] = attack_labels.map(self._kdd_attack_category)
         return df
 
-    def _resolve_kdd_path(self, split: str) -> Path:
+    def _resolve_kdd_path(self, split: str) -> tuple[Path, bool]:
         base = Path(self.data_path)
         if base.is_file():
-            return base
+            return base, False
 
         candidates = {
             "train": [
@@ -202,39 +209,84 @@ class FlowDatasetLoader:
 
         for candidate in candidates:
             if candidate.is_file():
-                return candidate
+                return candidate, False
 
         # Flexible fallback search if base directory exists
         if base.exists() and base.is_dir():
             all_files = [p for p in base.rglob("*") if p.is_file() and not p.name.startswith(".")]
-            valid_files = [
-                p for p in all_files 
-                if any(ext in p.name.lower() for ext in [".csv", ".data", ".gz", "kdd", "corrected", "10_percent"])
-                and "names" not in p.name.lower() and "typo" not in p.name.lower() and "attack_types" not in p.name.lower()
-            ]
             if split == "train":
-                for f in valid_files:
+                for f in all_files:
                     if "10_percent" in f.name.lower() or "train" in f.name.lower() or "kddcup.data" in f.name.lower():
                         print(f"[INFO] Auto-detected KDD train file: {f}")
-                        return f
+                        return f, False
             else:
-                for f in valid_files:
-                    if "corrected" in f.name.lower() or "test" in f.name.lower():
+                for f in all_files:
+                    if ("corrected" in f.name.lower() and "10_percent" not in f.name.lower()) or "test" in f.name.lower():
                         print(f"[INFO] Auto-detected KDD test file: {f}")
-                        return f
-            if valid_files:
-                print(f"[INFO] Auto-detected fallback KDD file for {split}: {valid_files[0]}")
-                return valid_files[0]
+                        return f, False
 
-            found_files = [str(f.relative_to(base)) for f in all_files]
-            raise FileNotFoundError(
-                f"Could not find KDD Cup 99 {split} file in '{base}'.\n"
-                f"Available files under '{base}': {found_files}"
-            )
+        # Check parent directory, drive directories or current directory
+        fallback_dirs = []
+        for d in [
+            base.parent if base.parent.exists() else None,
+            Path("/content/drive/MyDrive/SSSL_UNFREEZED/KDDCUP99"),
+            Path("/content/drive/MyDrive/SSSL_Based_IDS/KDDCUP99"),
+            Path("/content/KDDCUP99"),
+            Path("/content"),
+            Path.cwd().parent / "KDDCUP99",
+            Path.cwd(),
+        ]:
+            if d and d.exists() and d.is_dir() and d not in fallback_dirs:
+                fallback_dirs.append(d)
+
+        for search_dir in fallback_dirs:
+            fallback_candidates = [
+                search_dir / "kddcup.data_10_percent" / "kddcup.data_10_percent",
+                search_dir / "kddcup.data_10_percent_corrected",
+                search_dir / "kddcup.data_10_percent",
+                search_dir / "kddcup.data_10_percent.gz",
+                search_dir / "kddcup.data_10_percent.csv",
+                search_dir / "kddcup.data_10_percent_corrected.csv",
+                search_dir / "kddcup.data" / "kddcup.data",
+                search_dir / "kddcup.data",
+                search_dir / "kddcup.data.gz",
+                search_dir / "kddcup.data.csv",
+                search_dir / "kddcup.csv",
+                search_dir / "kddcup99.csv",
+            ] if split == "train" else [
+                search_dir / "corrected" / "corrected",
+                search_dir / "corrected",
+                search_dir / "corrected.gz",
+                search_dir / "corrected.csv",
+                search_dir / "kddcup.data.corrected",
+                search_dir / "kddcup.data.corrected.csv",
+                search_dir / "kddcup.testdata.unlabeled.gz",
+                search_dir / "kddcup.testdata.unlabeled",
+                search_dir / "kddcup.testdata.unlabeled.csv",
+            ]
+            for cand in fallback_candidates:
+                if cand.is_file():
+                    print(f"[INFO] Auto-detected KDD {split} file: {cand}")
+                    return cand, False
+
+        # If dedicated test file not found, partition 20% test slice from available train file
+        if split == "test":
+            for search_dir in [base] + fallback_dirs:
+                for train_cand in [
+                    search_dir / "kddcup.data_10_percent_corrected",
+                    search_dir / "kddcup.data_10_percent" / "kddcup.data_10_percent",
+                    search_dir / "kddcup.data_10_percent",
+                    search_dir / "kddcup.data_10_percent.gz",
+                ]:
+                    if train_cand.is_file():
+                        print(f"[INFO] Dedicated test file not found. Auto-partitioning 20% test split from: {train_cand}")
+                        return train_cand, True
 
         expected = "\n  - ".join(str(path) for path in candidates)
         raise FileNotFoundError(
-            f"Could not find the KDD Cup 99 {split} file. Checked:\n  - {expected}"
+            f"The specified dataset directory '{base}' does not exist or does not contain KDD Cup 99 files.\n"
+            f"Expected one of the following files:\n  - {expected}\n\n"
+            f"Hint: If running in Google Colab with files uploaded directly to /content, pass '--data_path /content' or create the directory /content/KDDCUP99 and move the files there."
         )
 
     def _load_cicids2017(

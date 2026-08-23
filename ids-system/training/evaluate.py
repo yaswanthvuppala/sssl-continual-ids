@@ -68,6 +68,16 @@ def find_optimal_threshold(labels, probs_positive, strategy="f1"):
         raise ValueError(f"Unknown strategy: {strategy}")
 
 
+def batch_forward(model: tf.keras.Model, x: np.ndarray, batch_size: int = 2048) -> np.ndarray:
+    """Run model inference in chunks to prevent GPU out-of-memory errors on large datasets."""
+    outputs = []
+    for i in range(0, len(x), batch_size):
+        batch = tf.constant(x[i:i+batch_size], dtype=tf.float32)
+        out = model(batch, training=False).numpy()
+        outputs.append(out)
+    return np.concatenate(outputs, axis=0) if outputs else np.empty((0, model.output_shape[-1]))
+
+
 def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
                   features: np.ndarray, labels: np.ndarray, task_name: str,
                   eval_dir: str = None,
@@ -75,8 +85,8 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
                   val_labels: Optional[np.ndarray] = None):
     """Evaluate a single classifier head and print metrics. Fits calibration & threshold on validation set if provided."""
     eval_dir = eval_dir or "./logs/eval"
-    embeddings = encoder(tf.constant(features, dtype=tf.float32), training=False).numpy()
-    logits = head(tf.constant(embeddings, dtype=tf.float32), training=False).numpy()
+    embeddings = batch_forward(encoder, features, batch_size=2048)
+    logits = batch_forward(head, embeddings, batch_size=2048)
     probs = tf.nn.softmax(logits, axis=-1).numpy()
     preds = np.argmax(probs, axis=-1)
 
@@ -116,8 +126,8 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
         opt_threshold = 0.5
 
         if val_features is not None and val_labels is not None:
-            val_emb = encoder(tf.constant(val_features, dtype=tf.float32), training=False).numpy()
-            val_logits = head(tf.constant(val_emb, dtype=tf.float32), training=False).numpy()
+            val_emb = batch_forward(encoder, val_features, batch_size=2048)
+            val_logits = batch_forward(head, val_emb, batch_size=2048)
             val_probs = tf.nn.softmax(val_logits, axis=-1).numpy()
             
             try:
@@ -274,6 +284,8 @@ def main():
                         help="Path to the fitted preprocessor")
     parser.add_argument("--dataset_name", type=str, default="default",
                         help="Dataset identifier for scoping output paths")
+    parser.add_argument("--encoder_snapshot", type=str, default=None,
+                        help="Load encoder from this snapshot dir (e.g. checkpoints/kddcup99/snapshots/after_dos/encoder) instead of SSL checkpoint")
     args = parser.parse_args()
     allow_demo = not (args.dataset or args.test_csv)
 
@@ -290,6 +302,18 @@ def main():
         else:
             args.preprocessor_path = f"{ckpt_base}/preprocessor_{args.task}.pkl"
 
+    if not os.path.exists(args.preprocessor_path):
+        for cand_prep in [
+            f"{ckpt_base}/preprocessor.pkl",
+            f"{ckpt_base}/preprocessor_dos.pkl",
+            f"{ckpt_base}/preprocessor_port_scan.pkl",
+            "./checkpoints/preprocessor.pkl",
+        ]:
+            if os.path.exists(cand_prep):
+                print(f"[INFO] '{args.preprocessor_path}' not found, falling back to '{cand_prep}'")
+                args.preprocessor_path = cand_prep
+                break
+
     # Load or build encoder
     encoder_path = f"{ckpt_base}/encoder_frozen.keras"
     if not os.path.exists(encoder_path):
@@ -300,6 +324,24 @@ def main():
             encoder_path = old_path
         else:
             encoder_path = None
+
+    encoder = None
+    if encoder_path is None:
+        # Check if task snapshot encoder is available
+        for snap_task in ["after_port_scan", "after_dos", "after_intrusion"]:
+            snap_dir = f"{ckpt_base}/snapshots/{snap_task}/encoder"
+            snap_ckpt = tf.train.latest_checkpoint(snap_dir)
+            if snap_ckpt:
+                print(f"[INFO] No frozen SSL encoder, restoring encoder from snapshot: {snap_dir}")
+                # Load preprocessor to get input_dim
+                try:
+                    p = FlowPreprocessor.load(args.preprocessor_path)
+                    input_dim = len(p.feature_columns_)
+                except Exception:
+                    input_dim = 80
+                encoder = build_flow_encoder(input_dim=input_dim)
+                tf.train.Checkpoint(encoder=encoder).restore(snap_ckpt).expect_partial()
+                break
 
     if encoder_path:
         import zipfile
@@ -387,11 +429,21 @@ def main():
                 encoder = tf.keras.models.load_model(encoder_path)
         else:
             encoder = tf.keras.models.load_model(encoder_path)
-    else:
+    elif encoder is None:
         if not allow_demo:
             raise FileNotFoundError(f"Frozen encoder not found at {ckpt_base}/encoder_frozen.keras. Run SSL training first.")
         print("[WARN] No frozen encoder found; using fresh encoder for demo.")
         encoder = build_flow_encoder(input_dim=80)
+
+    # Override encoder weights from snapshot if specified
+    if args.encoder_snapshot:
+        snapshot_ckpt = tf.train.latest_checkpoint(args.encoder_snapshot)
+        if snapshot_ckpt:
+            print(f"Loading encoder from snapshot: {snapshot_ckpt}")
+            tf.train.Checkpoint(encoder=encoder).restore(snapshot_ckpt).expect_partial()
+        else:
+            print(f"[WARN] No snapshot found at {args.encoder_snapshot}, using default encoder")
+
     encoder.trainable = False
     embed_dim = encoder.output_shape[-1]
 
