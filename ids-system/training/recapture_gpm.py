@@ -82,7 +82,10 @@ def main():
     encoder = load_frozen_encoder(f"{ckpt_base}/encoder_frozen.keras")
     head = build_task_head(args.task, embed_dim=encoder.output_shape[-1])
 
-    ckpt = tf.train.latest_checkpoint(f"{ckpt_base}/{args.task}")
+    ckpt = (
+        tf.train.latest_checkpoint(f"{ckpt_base}/{args.task}/best")
+        or tf.train.latest_checkpoint(f"{ckpt_base}/{args.task}")
+    )
     if not ckpt:
         raise FileNotFoundError(f"No checkpoint found for {args.task} under {ckpt_base}/{args.task}")
     tf.train.Checkpoint(head=head).restore(ckpt).expect_partial()

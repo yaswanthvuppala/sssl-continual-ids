@@ -1,8 +1,10 @@
 param (
     [int]$ssl_epochs = 15,
+    [int]$unsw_ssl_epochs = 25,
     [int]$task_epochs = 20,
     [int]$gpm_epochs = 10,
-    [string[]]$datasets = @("unsw", "kddcup99", "cicids2017")
+    [string[]]$datasets = @("unsw", "kddcup99", "cicids2017"),
+    [bool]$retrain = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,13 +30,19 @@ foreach ($dataset in $datasets) {
     Write-Host "STARTING BENCHMARK FOR DATASET: $dataset" -ForegroundColor Green
     Write-Host "==========================================`n" -ForegroundColor Green
 
+    $ckptDir = "checkpoints/$dataset"
+    if ($retrain -and (Test-Path $ckptDir)) {
+        Write-Host "Forcing retraining: Cleaning old checkpoints in $ckptDir..." -ForegroundColor Yellow
+        Remove-Item -Path "$ckptDir\*" -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     if ($dataset -eq "unsw") {
         # 1. SSL Pretraining
-        if (Test-Path "checkpoints/unsw/encoder_frozen.keras") {
+        if (-not $retrain -and (Test-Path "checkpoints/unsw/encoder_frozen.keras")) {
             Write-Host "[1/4] Frozen encoder already exists. Skipping SSL Pretraining." -ForegroundColor Green
         } else {
-            Write-Host "[1/4] Running SSL Pretraining..." -ForegroundColor Yellow
-            python training/train_ssl.py --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" --label_col "label" --epochs $ssl_epochs --dataset_name unsw
+            Write-Host "[1/4] Running SSL Pretraining ($unsw_ssl_epochs epochs)..." -ForegroundColor Yellow
+            python training/train_ssl.py --train_csv "../IDS-UNSW_NB/UNSW_NB15_training-set.csv" --label_col "label" --epochs $unsw_ssl_epochs --dataset_name unsw
         }
 
         # 2. Train, Evaluate & Visualize Intrusion
@@ -57,7 +65,7 @@ foreach ($dataset in $datasets) {
 
     } elseif ($dataset -eq "kddcup99") {
         # 1. SSL Pretraining
-        if (Test-Path "checkpoints/kddcup99/encoder_frozen.keras") {
+        if (-not $retrain -and (Test-Path "checkpoints/kddcup99/encoder_frozen.keras")) {
             Write-Host "[1/4] Frozen encoder already exists. Skipping SSL Pretraining." -ForegroundColor Green
         } else {
             Write-Host "[1/4] Running SSL Pretraining..." -ForegroundColor Yellow
@@ -84,7 +92,7 @@ foreach ($dataset in $datasets) {
 
     } elseif ($dataset -eq "cicids2017") {
         # 1. SSL Pretraining
-        if (Test-Path "checkpoints/cicids2017/encoder_frozen.keras") {
+        if (-not $retrain -and (Test-Path "checkpoints/cicids2017/encoder_frozen.keras")) {
             Write-Host "[1/4] Frozen encoder already exists. Skipping SSL Pretraining." -ForegroundColor Green
         } else {
             Write-Host "[1/4] Running SSL Pretraining..." -ForegroundColor Yellow

@@ -1,22 +1,22 @@
 import os
 import pickle
 import numpy as np
-from typing import List, Optional
+from typing import List, Optional, Any
 
 class MemoryBank:
     """
-    Stores and manages the basis vectors of past tasks.
+    Stores and manages the basis vectors of past tasks (supports per-layer bases).
     """
     def __init__(self, save_dir: str = "./checkpoints/gpm"):
         self.save_dir = save_dir
-        self.bases: List[np.ndarray] = []
+        self.bases: List[Any] = []
         os.makedirs(self.save_dir, exist_ok=True)
         
-    def add_basis(self, basis: np.ndarray):
-        """Adds a new basis to the memory bank."""
+    def add_basis(self, basis: Any):
+        """Adds a new basis (single array or list of per-layer arrays) to the memory bank."""
         self.bases.append(basis)
         
-    def get_all_bases(self) -> List[np.ndarray]:
+    def get_all_bases(self) -> List[Any]:
         """Returns all stored bases."""
         return self.bases
         

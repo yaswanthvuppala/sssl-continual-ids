@@ -178,21 +178,60 @@ class FlowDatasetLoader:
                 base / "kddcup.data_10_percent_corrected",
                 base / "kddcup.data_10_percent",
                 base / "kddcup.data_10_percent.gz",
+                base / "kddcup.data_10_percent.csv",
+                base / "kddcup.data_10_percent_corrected.csv",
                 base / "kddcup.data" / "kddcup.data",
                 base / "kddcup.data",
                 base / "kddcup.data.gz",
+                base / "kddcup.data.csv",
+                base / "kddcup.csv",
+                base / "kddcup99.csv",
             ],
             "test": [
                 base / "corrected" / "corrected",
                 base / "corrected",
                 base / "corrected.gz",
+                base / "corrected.csv",
                 base / "kddcup.data.corrected",
+                base / "kddcup.data.corrected.csv",
+                base / "kddcup.testdata.unlabeled.gz",
+                base / "kddcup.testdata.unlabeled",
+                base / "kddcup.testdata.unlabeled.csv",
             ],
         }[split]
 
         for candidate in candidates:
             if candidate.is_file():
                 return candidate
+
+        # Flexible fallback search if base directory exists
+        if base.exists() and base.is_dir():
+            all_files = [p for p in base.rglob("*") if p.is_file() and not p.name.startswith(".")]
+            valid_files = [
+                p for p in all_files 
+                if any(ext in p.name.lower() for ext in [".csv", ".data", ".gz", "kdd", "corrected", "10_percent"])
+                and "names" not in p.name.lower() and "typo" not in p.name.lower() and "attack_types" not in p.name.lower()
+            ]
+            if split == "train":
+                for f in valid_files:
+                    if "10_percent" in f.name.lower() or "train" in f.name.lower() or "kddcup.data" in f.name.lower():
+                        print(f"[INFO] Auto-detected KDD train file: {f}")
+                        return f
+            else:
+                for f in valid_files:
+                    if "corrected" in f.name.lower() or "test" in f.name.lower():
+                        print(f"[INFO] Auto-detected KDD test file: {f}")
+                        return f
+            if valid_files:
+                print(f"[INFO] Auto-detected fallback KDD file for {split}: {valid_files[0]}")
+                return valid_files[0]
+
+            found_files = [str(f.relative_to(base)) for f in all_files]
+            raise FileNotFoundError(
+                f"Could not find KDD Cup 99 {split} file in '{base}'.\n"
+                f"Available files under '{base}': {found_files}"
+            )
+
         expected = "\n  - ".join(str(path) for path in candidates)
         raise FileNotFoundError(
             f"Could not find the KDD Cup 99 {split} file. Checked:\n  - {expected}"
@@ -216,16 +255,14 @@ class FlowDatasetLoader:
                 attack_labels.str.casefold().eq("benign"), "normal", "attack"
             )
 
-            train_frame, test_frame = train_test_split(
-                frame,
-                test_size=test_size,
-                random_state=random_state,
-                shuffle=True,
-                stratify=frame["AttackLabel"],
-            )
-            selected_frames.append(
-                train_frame if split == "train" else test_frame
-            )
+            # Sequential (time-aware) split to prevent temporal session leakage across correlated flows
+            split_idx = int(len(frame) * (1.0 - test_size))
+            if split == "train":
+                train_frame = frame.iloc[:split_idx]
+                selected_frames.append(train_frame)
+            else:
+                test_frame = frame.iloc[split_idx:]
+                selected_frames.append(test_frame)
 
         return pd.concat(selected_frames, ignore_index=True)
 

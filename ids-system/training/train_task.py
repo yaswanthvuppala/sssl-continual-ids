@@ -1,6 +1,9 @@
 import os
 import sys
 import argparse
+import shutil
+import tempfile
+import zipfile
 import tensorflow as tf
 import numpy as np
 
@@ -9,12 +12,22 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from data.dataset_loader import FlowDatasetLoader
 from data.preprocessing import FlowPreprocessor
 from data.tf_dataset import make_labeled_dataset, make_unlabeled_dataset, make_balanced_dataset
+from sklearn.model_selection import train_test_split
 from classifiers.base_head import build_classifier_head
 from classifiers.dos_head import build_dos_head
 from classifiers.scan_head import build_scan_head
 from classifiers.fixmatch_trainer import FixMatchTrainer
 from gpm.gpm import GradientProjectionMemory
 from gpm.memory_bank import MemoryBank
+
+
+def copy_keras_weights_from_zip(zip_path: str, temp_dir: str) -> str:
+    weights_path = os.path.join(temp_dir, "model.weights.h5")
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        with zip_ref.open("model.weights.h5") as src, open(weights_path, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+    return weights_path
+
 
 def load_keras3_weights_manually(model, zip_path: str):
     """Loads Keras 3 weights manually and robustly using type-and-order matching."""
@@ -26,7 +39,7 @@ def load_keras3_weights_manually(model, zip_path: str):
     temp_dir = tempfile.mkdtemp(dir=".")
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+            weights_path = copy_keras_weights_from_zip(zip_path, temp_dir)
             with h5py.File(weights_path, 'r') as f:
                 # 1. Parse all H5 layers and categorize them
                 h5_layers = []
@@ -117,19 +130,18 @@ def load_frozen_encoder(path: str = "./checkpoints/encoder_frozen.keras") -> tf.
     if not os.path.exists(path):
         raise FileNotFoundError(f"Frozen encoder not found at {path}. Run train_ssl.py first.")
         
+    from encoder.flow_encoder import build_flow_encoder
     import zipfile
     if zipfile.is_zipfile(path):
         print(f"Encoder Keras 3 zip format detected. Loading weights manually.")
-        from encoder.flow_encoder import build_flow_encoder
         import tempfile
         import shutil
         import h5py
         temp_dir = tempfile.mkdtemp(dir=".")
         try:
-            with zipfile.ZipFile(path, 'r') as zip_ref:
-                weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
-                with h5py.File(weights_path, 'r') as f:
-                    input_dim = f['layers/dense/vars/0'].shape[0]
+            weights_path = copy_keras_weights_from_zip(path, temp_dir)
+            with h5py.File(weights_path, 'r') as f:
+                input_dim = f['layers/dense/vars/0'].shape[0]
             
             model = build_flow_encoder(input_dim=input_dim)
             load_keras3_weights_manually(model, path)
@@ -141,9 +153,36 @@ def load_frozen_encoder(path: str = "./checkpoints/encoder_frozen.keras") -> tf.
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
 
-    model = tf.keras.models.load_model(path)
-    model.trainable = False
-    return model
+    import h5py
+    if h5py.is_hdf5(path):
+        print(f"Encoder HDF5 model_weights format detected. Loading weights into encoder.")
+        try:
+            with h5py.File(path, 'r') as f:
+                mw = f['model_weights']
+                input_dim = mw['dense']['dense']['kernel:0'].shape[0]
+                model = build_flow_encoder(input_dim=input_dim)
+                
+                if 'dense' in mw:
+                    model.get_layer('dense').set_weights([mw['dense']['dense']['kernel:0'][()], mw['dense']['dense']['bias:0'][()]])
+                if 'layer_normalization' in mw:
+                    model.get_layer('layer_normalization').set_weights([mw['layer_normalization']['layer_normalization']['gamma:0'][()], mw['layer_normalization']['layer_normalization']['beta:0'][()]])
+                if 'dense_1' in mw:
+                    model.get_layer('dense_1').set_weights([mw['dense_1']['dense_1']['kernel:0'][()], mw['dense_1']['dense_1']['bias:0'][()]])
+                if 'layer_normalization_1' in mw:
+                    model.get_layer('layer_normalization_1').set_weights([mw['layer_normalization_1']['layer_normalization_1']['gamma:0'][()], mw['layer_normalization_1']['layer_normalization_1']['beta:0'][()]])
+                if 'embedding_dense' in mw:
+                    model.get_layer('embedding_dense').set_weights([mw['embedding_dense']['embedding_dense']['kernel:0'][()], mw['embedding_dense']['embedding_dense']['bias:0'][()]])
+                model.trainable = False
+                return model
+        except Exception as e:
+            print(f"[WARN] Manual HDF5 weight loading failed: {e}. Trying standard load_model...")
+
+    try:
+        model = tf.keras.models.load_model(path)
+        model.trainable = False
+        return model
+    except Exception as e:
+        raise RuntimeError(f"Could not load encoder from {path}: {e}")
 
 
 def build_task_head(task: str, embed_dim: int) -> tf.keras.Model:
@@ -199,9 +238,20 @@ def main():
                         help="Use class-balanced batching (50/50 per batch)")
     parser.add_argument("--warmup_epochs", type=int, default=3,
                         help="Number of warmup epochs with no pseudo-label loss")
+    parser.add_argument("--label_ratio", type=float, default=0.20,
+                        help="Fraction of training data to use as labeled (0.05=5%%, 0.10=10%%, 0.20=20%%, 0.50=50%%, 1.0=100%%)")
+    parser.add_argument("--encoder_path", type=str, default=None,
+                        help="Path to pre-trained frozen encoder .keras file")
+    parser.add_argument("--unfreeze_encoder", action="store_true",
+                        help="Unfreeze encoder weights during task training to allow representation fine-tuning")
     args = parser.parse_args()
 
     print(f"Initializing Continual Learning for Task: {args.task}")
+
+    if not (args.dataset or args.train_csv):
+        args.label_col = "Label"
+    elif args.label_col is None or (args.label_col == "Label" and args.task != "intrusion"):
+        args.label_col = "Label" if args.task == "intrusion" else "AttackCategory"
 
     # Resolve dataset-scoped base paths
     ds = args.dataset_name
@@ -219,8 +269,35 @@ def main():
             args.preprocessor_path = f"{ckpt_base}/preprocessor_{args.task}.pkl"
     print(f"Using preprocessor: {args.preprocessor_path}")
 
-    # Load frozen encoder
-    encoder = load_frozen_encoder(f"{ckpt_base}/encoder_frozen.keras")
+    # Resolve encoder path with smart fallbacks
+    enc_path = args.encoder_path
+    if enc_path is None or not os.path.exists(enc_path):
+        base_ds = args.dataset if args.dataset else args.dataset_name.split("_")[0]
+        candidates = [
+            f"{ckpt_base}/encoder_frozen.keras",
+            f"./checkpoints/{base_ds}/encoder_frozen.keras",
+            f"../logs_Experimental/{base_ds}/encoder_frozen.keras",
+        ]
+        for cand in candidates:
+            if os.path.exists(cand):
+                enc_path = cand
+                break
+
+    if enc_path is None or not os.path.exists(enc_path):
+        raise FileNotFoundError(
+            f"Frozen encoder not found at {ckpt_base}/encoder_frozen.keras. "
+            f"Please run train_ssl.py first or specify --encoder_path."
+        )
+
+    print(f"Loading encoder from: {enc_path}")
+    encoder = load_frozen_encoder(enc_path)
+
+    # Save a copy in ckpt_base if it's not already there
+    target_enc_copy = f"{ckpt_base}/encoder_frozen.keras"
+    if not os.path.exists(target_enc_copy) and enc_path != target_enc_copy:
+        import shutil
+        shutil.copyfile(enc_path, target_enc_copy)
+        print(f"Saved encoder copy to {target_enc_copy}")
     
     # Initialize GPM only for continual task heads. The generic intrusion task is a single binary head.
     memory_bank = None
@@ -243,7 +320,11 @@ def main():
         expected_input_dim = encoder.input_shape[-1]
         if os.path.exists(args.preprocessor_path):
             preprocessor = FlowPreprocessor.load(args.preprocessor_path)
+            refit_needed = (args.task != "intrusion" and set(preprocessor.get_classes()).issubset({"attack", "normal"}))
             try:
+                if refit_needed:
+                    print(f"[WARN] Preprocessor at {args.preprocessor_path} has binary classes {preprocessor.get_classes()}, refitting for task '{args.task}' on '{args.label_col}'...")
+                    raise ValueError("Refitting preprocessor for task-specific attack categories.")
                 X_l, y_l = preprocessor.transform(
                     df_labeled, label_col=args.label_col
                 )
@@ -271,13 +352,16 @@ def main():
                 f"encoder expects {expected_input_dim}. Re-run SSL pretraining "
                 "for this dataset first."
             )
-        X_u = X_l
     elif args.train_csv:
         df_labeled = loader.load_csv(args.train_csv, label_col=args.label_col)
         expected_input_dim = encoder.input_shape[-1]
         if os.path.exists(args.preprocessor_path):
             preprocessor = FlowPreprocessor.load(args.preprocessor_path)
+            refit_needed = (args.task != "intrusion" and set(preprocessor.get_classes()).issubset({"attack", "normal"}))
             try:
+                if refit_needed:
+                    print(f"[WARN] Preprocessor at {args.preprocessor_path} has binary classes {preprocessor.get_classes()}, refitting for task '{args.task}' on '{args.label_col}'...")
+                    raise ValueError("Refitting preprocessor for task-specific attack categories.")
                 X_l, y_l = preprocessor.transform(df_labeled, label_col=args.label_col)
             except (ValueError, KeyError) as e:
                 print(f"[WARN] Saved preprocessor incompatible with label column '{args.label_col}': {e}")
@@ -303,18 +387,45 @@ def main():
                 f"Training features have {X_l.shape[1]} columns but the frozen encoder expects "
                 f"{expected_input_dim}. Re-run SSL pretraining for this dataset first."
             )
-        X_u = X_l
     else:
-        df_labeled = loader.create_synthetic_data(num_samples=500, num_features=80)
-        df_unlabeled = loader.create_synthetic_data(num_samples=20000, num_features=80)
+        df_labeled = loader.create_synthetic_data(num_samples=2000, num_features=80)
         preprocessor = FlowPreprocessor()
         X_l, y_l = preprocessor.fit_transform(df_labeled, label_col=args.label_col)
-        X_u, _ = preprocessor.transform(df_unlabeled, label_col=args.label_col)
     
     y_l_binary = make_task_labels(args.task, y_l, preprocessor.get_classes())
+    
+    # 1. Carve out a 15% validation split for early stopping and threshold tuning
+    X_train_full, X_val, y_train_full, y_val = train_test_split(
+        X_l, y_l_binary, test_size=0.15, random_state=42, stratify=y_l_binary
+    )
+    
+    # Save validation data for evaluator
+    val_save_path = f"{ckpt_base}/{args.task}/val_data.npz"
+    os.makedirs(os.path.dirname(val_save_path), exist_ok=True)
+    np.savez(val_save_path, val_x=X_val, val_y=y_val)
+    print(f"Validation data saved to {val_save_path} ({len(X_val)} samples)")
+    
+    # 2. Split train set into labeled and unlabeled subsets
+    label_ratio = args.label_ratio
+    if label_ratio >= 1.0:
+        # 100% labeled: use all training data as labeled, duplicate as unlabeled for FixMatch
+        X_l = X_train_full
+        y_l_binary = y_train_full
+        X_u = X_train_full  # unlabeled path still needs data for FixMatch pipeline
+        print(f"[INFO] Using 100% labeled data ({len(X_l)} samples). Unlabeled set mirrors labeled for FixMatch compatibility.")
+    else:
+        unlabeled_fraction = 1.0 - label_ratio
+        X_l_sub, X_u_sub, y_l_binary, _ = train_test_split(
+            X_train_full, y_train_full, test_size=unlabeled_fraction, random_state=42, stratify=y_train_full
+        )
+        X_l = X_l_sub
+        X_u = X_u_sub
+    
     if args.max_labeled is not None:
         X_l = X_l[:args.max_labeled]
         y_l_binary = y_l_binary[:args.max_labeled]
+    
+    print(f"Dataset split summary -> Labeled: {len(X_l)} samples | Unlabeled: {len(X_u)} samples | Validation: {len(X_val)} samples")
     
     # Compute class weights (inverse frequency) to address class imbalance
     unique_classes, class_counts = np.unique(y_l_binary, return_counts=True)
@@ -323,30 +434,32 @@ def main():
     class_weights = {}
     for cls_id, count in zip(unique_classes, class_counts):
         class_weights[int(cls_id)] = n_samples / (n_classes * count)
-    print(f"Class distribution: {dict(zip(unique_classes.tolist(), class_counts.tolist()))}")
+    print(f"Class distribution (labeled): {dict(zip(unique_classes.tolist(), class_counts.tolist()))}")
     print(f"Class weights: {class_weights}")
     
-    # Log if class imbalance is severe (ratio > 50:1)
+    # Auto-enable class balancing for imbalanced datasets
+    use_balanced = args.balanced
     if len(class_counts) > 1:
         min_c, max_c = min(class_counts), max(class_counts)
         ratio = max_c / max(1, min_c)
-        if ratio > 50.0:
-            print(f"[WARN] Severe class imbalance detected (ratio {ratio:.1f}:1). FixMatchTrainer will cap class weights and clip gradients.")
+        if ratio > 5.0:
+            if not use_balanced:
+                print(f"[INFO] Class imbalance ratio is {ratio:.1f}:1 (>5.0). Auto-enabling class-balanced batching for '{args.task}'.")
+            use_balanced = True
     
     # Create datasets
-    if args.balanced:
+    if use_balanced:
+        if len(class_counts) < 2:
+            raise ValueError("Balanced batching requires both classes to be present.")
         print(f"[INFO] Using class-balanced batching (50/50 per batch)")
         labeled_ds = make_balanced_dataset(X_l, y_l_binary, batch_size=args.batch_size)
-        # For balanced datasets, set a fixed number of steps per epoch
-        # since the dataset is infinite (uses .repeat() internally)
         minority_count = int(min(class_counts))
-        steps_per_epoch = min(2 * minority_count // args.batch_size, 2000)
+        steps_per_epoch = max(100, min(2 * minority_count // args.batch_size, 2000))
         labeled_ds = labeled_ds.take(steps_per_epoch)
         print(f"[INFO] Steps per epoch (balanced): {steps_per_epoch}")
     else:
         labeled_ds = make_labeled_dataset(X_l, y_l_binary, batch_size=args.batch_size)
     
-    # Cap the steps per epoch if the dataset is large, to keep training times reasonable.
     max_steps_per_epoch = 2000
     if len(X_l) / args.batch_size > max_steps_per_epoch:
         print(f"[INFO] Labeled dataset is large ({len(X_l)} samples). Capping steps per epoch to {max_steps_per_epoch} for speed.")
@@ -354,17 +467,20 @@ def main():
         
     unlabeled_ds = make_unlabeled_dataset(X_u, batch_size=args.unlabeled_batch_size, for_ssl=False)
     
-    # Train via FixMatch with focal loss and class weighting
+    # Train via FixMatch with focal loss, class weighting, validation & early stopping
     trainer = FixMatchTrainer(
         encoder=encoder, head=head, gpm=gpm, lr=0.03,
         class_weights=class_weights, focal_gamma=2.0, confidence_threshold=0.90,
         log_dir=f"{log_base}/task_{args.task}",
         ckpt_dir=f"{ckpt_base}/{args.task}",
         clip_norm=1.0,
-        max_class_weight=10.0
+        max_class_weight=10.0,
+        weight_decay=1e-4,
+        min_mask_rate_threshold=0.50,
+        unfreeze_encoder=args.unfreeze_encoder
     )
     trainer.train(labeled_ds, unlabeled_ds, task_name=args.task, epochs=args.epochs,
-                  warmup_epochs=args.warmup_epochs)
+                  warmup_epochs=args.warmup_epochs, val_data=(X_val, y_val), patience=5)
     
     # After training, capture the gradients for this task to protect it in the future
     if gpm is not None and memory_bank is not None:
@@ -374,17 +490,18 @@ def main():
         
             # We use a combined model just to pass to GPM which expects a single callable.
             class TaskModel(tf.keras.Model):
-                def __init__(self, enc, hd):
+                def __init__(self, enc, hd, unfreeze=False):
                     super().__init__()
                     self.enc = enc
                     self.hd = hd
+                    self.unfreeze = unfreeze
                 @property
                 def trainable_variables(self):
-                    return self.hd.trainable_variables
+                    return (self.enc.trainable_variables if self.unfreeze else []) + self.hd.trainable_variables
                 def call(self, x, training=False):
                     return self.hd(self.enc(x, training=False), training=training)
                 
-            combined_model = TaskModel(encoder, head)
+            combined_model = TaskModel(encoder, head, unfreeze=args.unfreeze_encoder)
             gpm.capture_gradient_basis(
                 combined_model,
                 labeled_ds,

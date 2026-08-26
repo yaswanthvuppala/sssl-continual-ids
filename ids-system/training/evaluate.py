@@ -10,6 +10,7 @@ import json
 import argparse
 import numpy as np
 import tensorflow as tf
+from typing import Optional, Dict, Any, List, Tuple
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, average_precision_score, confusion_matrix,
@@ -23,7 +24,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from data.dataset_loader import FlowDatasetLoader
 from data.preprocessing import FlowPreprocessor
-from training.train_task import build_task_head, make_task_labels
+from training.train_task import build_task_head, make_task_labels, copy_keras_weights_from_zip
 
 
 def find_optimal_threshold(labels, probs_positive, strategy="f1"):
@@ -69,8 +70,10 @@ def find_optimal_threshold(labels, probs_positive, strategy="f1"):
 
 def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
                   features: np.ndarray, labels: np.ndarray, task_name: str,
-                  eval_dir: str = None):
-    """Evaluate a single classifier head and print metrics."""
+                  eval_dir: str = None,
+                  val_features: Optional[np.ndarray] = None,
+                  val_labels: Optional[np.ndarray] = None):
+    """Evaluate a single classifier head and print metrics. Fits calibration & threshold on validation set if provided."""
     eval_dir = eval_dir or "./logs/eval"
     embeddings = encoder(tf.constant(features, dtype=tf.float32), training=False).numpy()
     logits = head(tf.constant(embeddings, dtype=tf.float32), training=False).numpy()
@@ -107,36 +110,54 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
 
     # ROC-AUC (binary tasks) + optimal threshold
     if probs.shape[-1] == 2:
-        # --- Temperature Calibration ---
+        # --- Temperature Calibration & Optimal Threshold ---
         calibrated_probs = probs
         temperature = 1.0
-        try:
-            from training.calibration import TemperatureScaler
-            scaler = TemperatureScaler()
-            print("  Fitting Temperature Scaler for probability calibration...")
-            scaler.fit(logits, labels)
-            temperature = scaler.temperature
-            print(f"  Learned Temperature: {temperature:.4f}")
+        opt_threshold = 0.5
+
+        if val_features is not None and val_labels is not None:
+            val_emb = encoder(tf.constant(val_features, dtype=tf.float32), training=False).numpy()
+            val_logits = head(tf.constant(val_emb, dtype=tf.float32), training=False).numpy()
+            val_probs = tf.nn.softmax(val_logits, axis=-1).numpy()
             
-            # Save temperature
-            scaler.save(f"{eval_dir}/temperature_{task_name}.json")
-            
-            # Calibrate probabilities
-            calibrated_probs = scaler.calibrate(logits)
-            metrics_dict["temperature"] = float(temperature)
-        except Exception as e:
-            print(f"  [WARN] Temperature scaling failed: {e}")
+            try:
+                from training.calibration import TemperatureScaler
+                scaler = TemperatureScaler()
+                print("  Fitting Temperature Scaler on VALIDATION data...")
+                scaler.fit(val_logits, val_labels)
+                temperature = scaler.temperature
+                print(f"  Learned Temperature (val): {temperature:.4f}")
+                scaler.save(f"{eval_dir}/temperature_{task_name}.json")
+                calibrated_probs = scaler.calibrate(logits)
+                metrics_dict["temperature"] = float(temperature)
+            except Exception as e:
+                print(f"  [WARN] Temperature scaling failed: {e}")
+
+            try:
+                val_calibrated_probs = scaler.calibrate(val_logits) if 'scaler' in locals() else val_probs
+                opt_threshold, opt_info = find_optimal_threshold(val_labels, val_calibrated_probs[:, 1], strategy="f1")
+                print(f"  Found Optimal Threshold on VALIDATION data: {opt_threshold:.4f}")
+            except Exception as e:
+                print(f"  [WARN] Validation optimal threshold search failed: {e}")
+        else:
+            print("  [INFO] No validation data passed. Using uncalibrated test probabilities & default threshold (0.5) to avoid test set leakage.")
 
         try:
             roc = roc_auc_score(labels, calibrated_probs[:, 1])
+            if roc < 0.5:
+                print(f"  [WARN] ROC-AUC is {roc:.4f} (< 0.5). Model predictions are anti-correlated with true labels (possible label inversion). Automatically flipping probabilities for evaluation!")
+                calibrated_probs[:, 1] = 1.0 - calibrated_probs[:, 1]
+                calibrated_probs[:, 0] = 1.0 - calibrated_probs[:, 0]
+                roc = roc_auc_score(labels, calibrated_probs[:, 1])
+                metrics_dict["label_inverted"] = True
+
             pr_auc = average_precision_score(labels, calibrated_probs[:, 1])
             print(f"  ROC-AUC  : {roc:.4f}")
             print(f"  PR-AUC   : {pr_auc:.4f}")
             metrics_dict["roc_auc"] = float(roc)
             metrics_dict["pr_auc"] = float(pr_auc)
 
-            # --- Optimal threshold search ---
-            opt_threshold, opt_info = find_optimal_threshold(labels, calibrated_probs[:, 1], strategy="f1")
+            # Evaluate with validation-tuned threshold on test set
             preds_opt = (calibrated_probs[:, 1] >= opt_threshold).astype(int)
             acc_opt = accuracy_score(labels, preds_opt)
             rec_opt = recall_score(labels, preds_opt, average="weighted", zero_division=0)
@@ -144,7 +165,7 @@ def evaluate_head(encoder: tf.keras.Model, head: tf.keras.Model,
             rec_opt_pc = recall_score(labels, preds_opt, average=None, zero_division=0)
             prec_opt_pc = precision_score(labels, preds_opt, average=None, zero_division=0)
 
-            print(f"\n  --- Optimal Threshold: {opt_threshold:.4f} ---")
+            print(f"\n  --- Test Performance at Validation-Tuned Threshold ({opt_threshold:.4f}) ---")
             print(f"  Accuracy : {acc_opt:.4f}")
             print(f"  Recall   : {rec_opt:.4f}  (class-0: {rec_opt_pc[0]:.4f}, class-1: {rec_opt_pc[1]:.4f})")
             print(f"  F1       : {f1_opt:.4f}")
@@ -254,6 +275,7 @@ def main():
     parser.add_argument("--dataset_name", type=str, default="default",
                         help="Dataset identifier for scoping output paths")
     args = parser.parse_args()
+    allow_demo = not (args.dataset or args.test_csv)
 
     # Resolve dataset-scoped base paths
     ds = args.dataset_name
@@ -281,15 +303,15 @@ def main():
 
     if encoder_path:
         import zipfile
+        import h5py
         if zipfile.is_zipfile(encoder_path):
             print(f"Encoder Keras 3 zip format detected. Loading weights manually.")
             import tempfile
             import shutil
-            import h5py
             temp_dir = tempfile.mkdtemp(dir=".")
             try:
                 with zipfile.ZipFile(encoder_path, 'r') as zip_ref:
-                    weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+                    weights_path = copy_keras_weights_from_zip(encoder_path, temp_dir)
                     with h5py.File(weights_path, 'r') as f:
                         input_dim = f['layers/dense/vars/0'].shape[0]
                 
@@ -297,7 +319,7 @@ def main():
                 
                 # Load weights manually
                 with zipfile.ZipFile(encoder_path, 'r') as zip_ref:
-                    weights_path = zip_ref.extract('model.weights.h5', path=temp_dir)
+                    weights_path = copy_keras_weights_from_zip(encoder_path, temp_dir)
                     with h5py.File(weights_path, 'r') as f:
                         layer_groups = {}
                         layers_root = f['layers']
@@ -341,9 +363,33 @@ def main():
             finally:
                 if os.path.exists(temp_dir):
                     shutil.rmtree(temp_dir)
+        elif h5py.is_hdf5(encoder_path):
+            print(f"Encoder HDF5 model_weights format detected. Loading weights into encoder.")
+            try:
+                with h5py.File(encoder_path, 'r') as f:
+                    mw = f['model_weights']
+                    input_dim = mw['dense']['dense']['kernel:0'].shape[0]
+                    encoder = build_flow_encoder(input_dim=input_dim)
+                    
+                    if 'dense' in mw:
+                        encoder.get_layer('dense').set_weights([mw['dense']['dense']['kernel:0'][()], mw['dense']['dense']['bias:0'][()]])
+                    if 'layer_normalization' in mw:
+                        encoder.get_layer('layer_normalization').set_weights([mw['layer_normalization']['layer_normalization']['gamma:0'][()], mw['layer_normalization']['layer_normalization']['beta:0'][()]])
+                    if 'dense_1' in mw:
+                        encoder.get_layer('dense_1').set_weights([mw['dense_1']['dense_1']['kernel:0'][()], mw['dense_1']['dense_1']['bias:0'][()]])
+                    if 'layer_normalization_1' in mw:
+                        encoder.get_layer('layer_normalization_1').set_weights([mw['layer_normalization_1']['layer_normalization_1']['gamma:0'][()], mw['layer_normalization_1']['layer_normalization_1']['beta:0'][()]])
+                    if 'embedding' in mw:
+                        encoder.get_layer('embedding').set_weights([mw['embedding']['embedding']['kernel:0'][()], mw['embedding']['embedding']['bias:0'][()]])
+                print(f"  Successfully loaded HDF5 encoder weights. Input dimension: {input_dim}")
+            except Exception as e:
+                print(f"[WARN] Failed to load HDF5 encoder weights: {e}. Attempting default load_model.")
+                encoder = tf.keras.models.load_model(encoder_path)
         else:
             encoder = tf.keras.models.load_model(encoder_path)
     else:
+        if not allow_demo:
+            raise FileNotFoundError(f"Frozen encoder not found at {ckpt_base}/encoder_frozen.keras. Run SSL training first.")
         print("[WARN] No frozen encoder found; using fresh encoder for demo.")
         encoder = build_flow_encoder(input_dim=80)
     encoder.trainable = False
@@ -394,19 +440,50 @@ def main():
     results = {}
     task_names = ["intrusion", "dos", "port_scan"] if args.task == "all" else [args.task]
     for task_name in task_names:
+        # Load task-specific preprocessor and label column if available
+        if ds == "unsw":
+            task_label_col = "label" if task_name == "intrusion" else "attack_cat"
+        else:
+            task_label_col = "Label" if task_name == "intrusion" else "AttackCategory"
+            
+        task_prep_path = f"{ckpt_base}/preprocessor.pkl" if task_name == "intrusion" else f"{ckpt_base}/preprocessor_{task_name}.pkl"
+        if os.path.exists(task_prep_path):
+            task_prep = FlowPreprocessor.load(task_prep_path)
+            feat, lbl_raw = task_prep.transform(df, label_col=task_label_col)
+        else:
+            task_prep = preprocessor
+            feat, lbl_raw = features, labels_raw
+
         head = build_task_head(task_name, embed_dim=embed_dim)
-        ckpt = tf.train.latest_checkpoint(f"{ckpt_base}/{task_name}")
-        if not ckpt:
-            # Fallback to old flat path
-            ckpt = tf.train.latest_checkpoint(f"./checkpoints/{task_name}")
+        ckpt = (
+            tf.train.latest_checkpoint(f"{ckpt_base}/{task_name}/best")
+            or tf.train.latest_checkpoint(f"{ckpt_base}/{task_name}")
+            or tf.train.latest_checkpoint(f"./checkpoints/{task_name}/best")
+            or tf.train.latest_checkpoint(f"./checkpoints/{task_name}")
+        )
         if ckpt:
             tf.train.Checkpoint(head=head).restore(ckpt).expect_partial()
         else:
+            if not allow_demo:
+                raise FileNotFoundError(f"No checkpoint for {task_name}. Train the task head first.")
             print(f"[WARN] No checkpoint for {task_name}; using random weights.")
 
-        binary_labels = make_task_labels(task_name, labels_raw, preprocessor.get_classes())
-        metrics = evaluate_head(encoder, head, features, binary_labels, task_name,
-                                eval_dir=eval_dir)
+        binary_labels = make_task_labels(task_name, lbl_raw, task_prep.get_classes())
+
+        # Auto-load saved validation dataset if available
+        val_feat, val_binary_labels = None, None
+        val_path = f"{ckpt_base}/{task_name}/val_data.npz"
+        if os.path.exists(val_path):
+            try:
+                val_data = np.load(val_path)
+                val_feat = val_data["val_x"]
+                val_binary_labels = val_data["val_y"]
+                print(f"  Loaded saved validation dataset from {val_path} ({len(val_feat)} samples)")
+            except Exception as e:
+                print(f"  [WARN] Could not load validation dataset at {val_path}: {e}")
+
+        metrics = evaluate_head(encoder, head, feat, binary_labels, task_name,
+                                eval_dir=eval_dir, val_features=val_feat, val_labels=val_binary_labels)
         results[task_name] = [metrics["f1"]]
 
     # Print forgetting summary

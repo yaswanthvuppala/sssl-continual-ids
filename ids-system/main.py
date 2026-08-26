@@ -1,36 +1,35 @@
 """
-main.py — Master entry point for the SSSL-Based Continual IDS.
+main.py - Master entry point for the SSSL-Based Continual IDS.
 
 Usage:
-    python main.py --mode ssl          # Stage 1: SSL Pretraining
-    python main.py --mode task --task dos    # Stage 2: Train DoS head
-    python main.py --mode task --task port_scan
-    python main.py --mode evaluate     # Evaluate all heads
+    python main.py --mode ssl
+    python main.py --mode task --task dos
+    python main.py --mode evaluate
     python main.py --mode pipeline --train_csv train.csv --test_csv test.csv
-    python main.py --mode unsw         # Train on UNSW-NB15 train CSV, test on test CSV
-    python main.py --mode kddcup99     # 10% training data + corrected test data
-    python main.py --mode cicids2017   # Deterministic stratified 80/20 split
-    python main.py --mode predict      # Run inference on synthetic data
-    python main.py --mode benchmark    # Full end-to-end benchmark
+    python main.py --mode unsw
+    python main.py --mode kddcup99
+    python main.py --mode cicids2017
+    python main.py --mode predict
+    python main.py --mode benchmark
 """
 import argparse
+import os
 import subprocess
 import sys
-import os
 
 
-def run(cmd: str):
-    print(f"\n>>> {cmd}\n")
-    result = subprocess.run(cmd, shell=True, cwd=os.path.dirname(os.path.abspath(__file__)))
+def run(cmd: list[str]):
+    print(f"\n>>> {subprocess.list2cmdline(cmd)}\n")
+    result = subprocess.run(cmd, cwd=os.path.dirname(os.path.abspath(__file__)))
     if result.returncode != 0:
         print(f"Command failed with exit code {result.returncode}")
         sys.exit(result.returncode)
 
 
-def add_arg(cmd: str, name: str, value):
-    if value is None:
-        return cmd
-    return f'{cmd} --{name} "{value}"'
+def add_arg(cmd: list[str], name: str, value):
+    if value is not None:
+        cmd.extend([f"--{name}", str(value)])
+    return cmd
 
 
 def run_csv_pipeline(
@@ -43,21 +42,29 @@ def run_csv_pipeline(
     task_epochs: int,
     dataset_name: str = "default",
 ):
-    ds_arg = f' --dataset_name "{dataset_name}"'
-    run(
-        f'"{python}" training/train_ssl.py --train_csv "{train_csv}" '
-        f'--label_col "{label_col}" --epochs {ssl_epochs}{ds_arg}'
-    )
-    run(
-        f'"{python}" training/train_task.py --task {task} --train_csv "{train_csv}" '
-        f'--label_col "{label_col}" --epochs {task_epochs}{ds_arg}'
-    )
-    run(
-        f'"{python}" training/evaluate.py --task {task} --test_csv "{test_csv}" '
-        f'--label_col "{label_col}"{ds_arg}'
-    )
-    # Auto-generate visualization plots
-    run(f'"{python}" training/visualize_metrics.py --task {task}{ds_arg}')
+    run([
+        python, "training/train_ssl.py",
+        "--train_csv", train_csv,
+        "--label_col", label_col,
+        "--epochs", str(ssl_epochs),
+        "--dataset_name", dataset_name,
+    ])
+    run([
+        python, "training/train_task.py",
+        "--task", task,
+        "--train_csv", train_csv,
+        "--label_col", label_col,
+        "--epochs", str(task_epochs),
+        "--dataset_name", dataset_name,
+    ])
+    run([
+        python, "training/evaluate.py",
+        "--task", task,
+        "--test_csv", test_csv,
+        "--label_col", label_col,
+        "--dataset_name", dataset_name,
+    ])
+    run([python, "training/visualize_metrics.py", "--task", task, "--dataset_name", dataset_name])
 
 
 def run_named_dataset_pipeline(
@@ -70,26 +77,19 @@ def run_named_dataset_pipeline(
     task_epochs: int,
     dataset_name: str = "default",
 ):
-    common_args = (
-        f'--dataset "{dataset}" --data_path "{data_path}" '
-        f'--label_col "{label_col}"'
-    )
-    ds_arg = f' --dataset_name "{dataset_name}"'
-    run(
-        f'"{python}" training/train_ssl.py {common_args} '
-        f"--epochs {ssl_epochs}{ds_arg}"
-    )
-    run(
-        f'"{python}" training/train_task.py --task {task} {common_args} '
-        f"--epochs {task_epochs}{ds_arg}"
-    )
-    run(f'"{python}" training/evaluate.py --task {task} {common_args}{ds_arg}')
-    run(f'"{python}" training/visualize_metrics.py --task {task}{ds_arg}')
-
+    common_args = [
+        "--dataset", dataset,
+        "--data_path", data_path,
+        "--label_col", label_col,
+    ]
+    run([python, "training/train_ssl.py", *common_args, "--epochs", str(ssl_epochs), "--dataset_name", dataset_name])
+    run([python, "training/train_task.py", "--task", task, *common_args, "--epochs", str(task_epochs), "--dataset_name", dataset_name])
+    run([python, "training/evaluate.py", "--task", task, *common_args, "--dataset_name", dataset_name])
+    run([python, "training/visualize_metrics.py", "--task", task, "--dataset_name", dataset_name])
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SSSL-Based Continual IDS — Master CLI")
+    parser = argparse.ArgumentParser(description="SSSL-Based Continual IDS - Master CLI")
     parser.add_argument("--mode", type=str, required=True,
                         choices=[
                             "ssl", "task", "evaluate", "predict", "benchmark",
@@ -113,95 +113,80 @@ def main():
     args = parser.parse_args()
 
     python = sys.executable
-    # Resolve dataset_name: explicit flag > auto from mode > 'default'
     dataset_name = args.dataset_name or "default"
 
     if args.mode == "ssl":
-        ds_arg = f' --dataset_name "{dataset_name}"'
-        cmd = f'"{python}" training/train_ssl.py'
+        cmd = [python, "training/train_ssl.py"]
         if args.epochs:
-            cmd += f" --epochs {args.epochs}"
-        cmd = add_arg(cmd, "train_csv", args.train_csv)
-        cmd = add_arg(cmd, "dataset", args.dataset)
-        cmd = add_arg(cmd, "data_path", args.data_path)
-        cmd = add_arg(cmd, "label_col", args.label_col)
-        cmd += ds_arg
+            cmd.extend(["--epochs", str(args.epochs)])
+        add_arg(cmd, "train_csv", args.train_csv)
+        add_arg(cmd, "dataset", args.dataset)
+        add_arg(cmd, "data_path", args.data_path)
+        add_arg(cmd, "label_col", args.label_col)
+        cmd.extend(["--dataset_name", dataset_name])
         run(cmd)
 
     elif args.mode == "task":
         if not args.task:
             print("ERROR: --task is required for mode 'task'")
             sys.exit(1)
-        ds_arg = f' --dataset_name "{dataset_name}"'
-        cmd = f'"{python}" training/train_task.py --task {args.task}'
+        cmd = [python, "training/train_task.py", "--task", args.task]
         if args.epochs:
-            cmd += f" --epochs {args.epochs}"
-        cmd = add_arg(cmd, "train_csv", args.train_csv)
-        cmd = add_arg(cmd, "dataset", args.dataset)
-        cmd = add_arg(cmd, "data_path", args.data_path)
-        cmd = add_arg(cmd, "label_col", args.label_col)
-        cmd += ds_arg
+            cmd.extend(["--epochs", str(args.epochs)])
+        add_arg(cmd, "train_csv", args.train_csv)
+        add_arg(cmd, "dataset", args.dataset)
+        add_arg(cmd, "data_path", args.data_path)
+        label_col = args.label_col or ("Label" if args.task == "intrusion" else "AttackCategory")
+        add_arg(cmd, "label_col", label_col)
+        cmd.extend(["--dataset_name", dataset_name])
         run(cmd)
 
     elif args.mode == "evaluate":
-        ds_arg = f' --dataset_name "{dataset_name}"'
-        cmd = f'"{python}" training/evaluate.py'
-        if args.task:
-            cmd += f" --task {args.task}"
-        cmd = add_arg(cmd, "test_csv", args.test_csv)
-        cmd = add_arg(cmd, "dataset", args.dataset)
-        cmd = add_arg(cmd, "data_path", args.data_path)
-        cmd = add_arg(cmd, "label_col", args.label_col)
-        cmd += ds_arg
+        cmd = [python, "training/evaluate.py"]
+        add_arg(cmd, "task", args.task)
+        add_arg(cmd, "test_csv", args.test_csv)
+        add_arg(cmd, "dataset", args.dataset)
+        add_arg(cmd, "data_path", args.data_path)
+        label_col = args.label_col or (("Label" if args.task == "intrusion" else "AttackCategory") if args.task else None)
+        add_arg(cmd, "label_col", label_col)
+        cmd.extend(["--dataset_name", dataset_name])
         run(cmd)
 
     elif args.mode == "predict":
-        run(f'"{python}" inference/predict.py')
+        run([python, "inference/predict.py", "--dataset_name", dataset_name])
 
     elif args.mode == "benchmark":
-        run(f'"{python}" training/benchmark.py')
+        run([python, "training/benchmark.py"])
 
     elif args.mode == "visualize":
         task = args.task or "intrusion"
-        run(f'"{python}" training/visualize_metrics.py --task {task} --dataset_name "{dataset_name}"')
+        run([python, "training/visualize_metrics.py", "--task", task, "--dataset_name", dataset_name])
 
     elif args.mode == "pipeline":
         if not args.train_csv or not args.test_csv:
             print("ERROR: --train_csv and --test_csv are required for mode 'pipeline'")
             sys.exit(1)
-        task = args.task or "intrusion"
-        label_col = args.label_col or "Label"
-        ssl_epochs = args.ssl_epochs or args.epochs or 5
-        task_epochs = args.task_epochs or args.epochs or 5
         run_csv_pipeline(
             python=python,
             train_csv=args.train_csv,
             test_csv=args.test_csv,
-            label_col=label_col,
-            task=task,
-            ssl_epochs=ssl_epochs,
-            task_epochs=task_epochs,
+            label_col=args.label_col or "Label",
+            task=args.task or "intrusion",
+            ssl_epochs=args.ssl_epochs or args.epochs or 5,
+            task_epochs=args.task_epochs or args.epochs or 5,
             dataset_name=dataset_name,
         )
 
     elif args.mode == "unsw":
-        train_csv = args.train_csv or "../IDS-UNSW_NB/UNSW_NB15_training-set.csv"
-        test_csv = args.test_csv or "../IDS-UNSW_NB/UNSW_NB15_testing-set.csv"
-        label_col = args.label_col or "label"
-        task = args.task or "intrusion"
-        ssl_epochs = args.ssl_epochs or args.epochs or 5
-        task_epochs = args.task_epochs or args.epochs or 5
-        ds = args.dataset_name or "unsw"
-
         run_csv_pipeline(
             python=python,
-            train_csv=train_csv,
-            test_csv=test_csv,
-            label_col=label_col,
-            task=task,
-            ssl_epochs=ssl_epochs,
-            task_epochs=task_epochs,
-            dataset_name=ds,
+            train_csv=args.train_csv or "../IDS-UNSW_NB/UNSW_NB15_training-set.csv",
+            test_csv=args.test_csv or "../IDS-UNSW_NB/UNSW_NB15_testing-set.csv",
+            label_col=args.label_col or "label",
+            task=args.task or "intrusion",
+            ssl_epochs=args.ssl_epochs or args.epochs or 5,
+            task_epochs=args.task_epochs or args.epochs or 5,
+            dataset_name=args.dataset_name or "unsw",
         )
 
     elif args.mode in {"kddcup99", "cicids2017"}:
@@ -211,22 +196,16 @@ def main():
             "cicids2017": "../CICIDS2017",
         }[dataset]
         task = args.task or "intrusion"
-        label_col = args.label_col or (
-            "Label" if task == "intrusion" else "AttackCategory"
-        )
-        ssl_epochs = args.ssl_epochs or args.epochs or 5
-        task_epochs = args.task_epochs or args.epochs or 5
-        ds = args.dataset_name or dataset
-
+        label_col = args.label_col or ("Label" if task == "intrusion" else "AttackCategory")
         run_named_dataset_pipeline(
             python=python,
             dataset=dataset,
             data_path=data_path,
             label_col=label_col,
             task=task,
-            ssl_epochs=ssl_epochs,
-            task_epochs=task_epochs,
-            dataset_name=ds,
+            ssl_epochs=args.ssl_epochs or args.epochs or 5,
+            task_epochs=args.task_epochs or args.epochs or 5,
+            dataset_name=args.dataset_name or dataset,
         )
 
 

@@ -14,13 +14,52 @@ from encoder.flow_encoder import build_flow_encoder
 from encoder.projection_head import build_projection_head
 from encoder.losses import nt_xent_loss
 
+class WarmupCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
+    """Linear warmup followed by cosine decay — compatible with TF 2.10+."""
+    def __init__(self, peak_lr, warmup_steps, decay_steps, alpha=0.01):
+        super().__init__()
+        self.peak_lr = peak_lr
+        self.warmup_steps = warmup_steps
+        self.decay_steps = decay_steps
+        self.alpha = alpha
+
+    def __call__(self, step):
+        step = tf.cast(step, tf.float32)
+        warmup = tf.cast(self.warmup_steps, tf.float32)
+        # Linear warmup
+        warmup_lr = self.peak_lr * (step / tf.maximum(warmup, 1.0))
+        # Cosine decay after warmup
+        decay_step = tf.minimum(step - warmup, tf.cast(self.decay_steps, tf.float32))
+        cosine_decay = 0.5 * (1.0 + tf.cos(
+            3.14159265 * decay_step / tf.cast(self.decay_steps, tf.float32)
+        ))
+        decay_lr = self.peak_lr * (self.alpha + (1.0 - self.alpha) * cosine_decay)
+        return tf.where(step < warmup, warmup_lr, decay_lr)
+
+    def get_config(self):
+        return {"peak_lr": self.peak_lr, "warmup_steps": self.warmup_steps,
+                "decay_steps": self.decay_steps, "alpha": self.alpha}
+
+
 class SSLPretrainer:
     def __init__(self, input_dim: int, hidden_dim: int = 512, embed_dim: int = 256, proj_dim: int = 128,
-                 ckpt_dir: str = None, log_dir: str = None):
+                 ckpt_dir: str = None, log_dir: str = None, total_steps: int = 5000, lr: float = 1e-3):
         self.encoder = build_flow_encoder(input_dim, hidden_dim, embed_dim)
         self.projector = build_projection_head(embed_dim, proj_dim)
         self.temperature = 0.1
-        self.optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
+        self.weight_decay = 1e-4
+        
+        # Warmup + CosineDecay learning rate schedule (TF 2.10 compatible)
+        warmup_steps = int(0.05 * total_steps)
+        self.lr_schedule = WarmupCosineDecay(
+            peak_lr=lr,
+            warmup_steps=warmup_steps,
+            decay_steps=total_steps - warmup_steps,
+            alpha=0.01,
+        )
+        # Use legacy Adam optimizer — the experimental.AdamW uses XLA internally
+        # which is incompatible with DirectML. Weight decay is applied manually.
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr_schedule)
         
         self.trainable_vars = self.encoder.trainable_variables + self.projector.trainable_variables
         self.log_dir = log_dir or './logs/ssl'
@@ -30,7 +69,7 @@ class SSLPretrainer:
         self.checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, encoder=self.encoder, projector=self.projector)
         self.ckpt_manager = tf.train.CheckpointManager(self.checkpoint, ssl_ckpt_dir, max_to_keep=3)
 
-    @tf.function
+    @tf.function(jit_compile=False)
     def train_step(self, x1, x2):
         with tf.GradientTape() as tape:
             z1 = self.projector(self.encoder(x1, training=True), training=True)
@@ -39,6 +78,11 @@ class SSLPretrainer:
             
         grads = tape.gradient(loss, self.trainable_vars)
         self.optimizer.apply_gradients(zip(grads, self.trainable_vars))
+        # Manual weight decay (AdamW equivalent): w = w * (1 - lr * wd)
+        current_lr = self.lr_schedule(self.optimizer.iterations)
+        for var in self.trainable_vars:
+            if 'bias' not in var.name and 'batch_normalization' not in var.name:
+                var.assign(var * (1.0 - current_lr * self.weight_decay))
         return loss
 
     def train(self, dataset: tf.data.Dataset, epochs: int = 10):
