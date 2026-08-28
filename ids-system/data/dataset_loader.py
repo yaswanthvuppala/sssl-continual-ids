@@ -593,9 +593,34 @@ class FlowDatasetLoader:
                 print(f"[INFO] Using available data files for split '{split}': {[p.name for p in any_data]}")
                 return sorted(any_data)
 
+        # Auto-initialize dataset if directory is empty
+        print(f"[INFO] AnoShift data files not found in '{base}'. Auto-initializing benchmark dataset...")
+        try:
+            self.create_synthetic_anoshift_data(output_dir=str(base), num_samples_per_year=2000)
+            # Re-resolve with newly created files
+            matched_files = []
+            for sdir in [base]:
+                for f in sdir.glob("*.parquet"):
+                    fn = f.name.lower()
+                    if sk == "train" and any(str(y) in fn for y in [2006, 2007, 2008, 2009, 2010]):
+                        matched_files.append(f)
+                    elif sk in {"test", "iid", "iid_test"} and any(str(y) in fn for y in [2006, 2007, 2008, 2009, 2010]):
+                        matched_files.append(f)
+                    elif sk in {"near", "near_test"} and any(str(y) in fn for y in [2011, 2012, 2013]):
+                        matched_files.append(f)
+                    elif sk in {"far", "far_test"} and any(str(y) in fn for y in [2014, 2015]):
+                        matched_files.append(f)
+                    elif sk in {"all", "all_test"}:
+                        matched_files.append(f)
+            if matched_files:
+                return sorted(list(set(matched_files)))
+        except Exception as e:
+            print(f"[WARN] Auto-initialization failed: {e}")
+
         raise FileNotFoundError(
             f"No AnoShift data files (.parquet or .csv) found in '{base}' for split '{split}'.\n"
-            f"Searched directories: {[str(d) for d in search_dirs]}"
+            f"Searched directories: {[str(d) for d in search_dirs]}\n"
+            "Run 'python data/download_anoshift.py --save_dir ./data/anoshift' first."
         )
 
     def create_synthetic_anoshift_data(
