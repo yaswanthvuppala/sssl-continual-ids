@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import List
 from typing import List, Optional
 
 import numpy as np
@@ -449,6 +450,7 @@ class FlowDatasetLoader:
             frame = None
             try:
                 if filepath.suffix.lower() == ".parquet":
+                    frame = pd.read_parquet(filepath)
                     # Fast streaming read via pyarrow to avoid reading multi-GB files into RAM
                     try:
                         import pyarrow.parquet as pq
@@ -462,6 +464,7 @@ class FlowDatasetLoader:
                     except Exception:
                         frame = pd.read_parquet(filepath)
                 else:
+                    frame = pd.read_csv(filepath, low_memory=False)
                     if per_file_cap is not None:
                         frame = pd.read_csv(filepath, nrows=per_file_cap, low_memory=False)
                     else:
@@ -479,6 +482,11 @@ class FlowDatasetLoader:
             float_cols = frame.select_dtypes(include=['float64']).columns
             if len(float_cols) > 0:
                 frame[float_cols] = frame[float_cols].astype(np.float32)
+            # Per-file subsampling to prevent Colab RAM overflow
+            if max_samples is not None:
+                per_file_cap = max(2000, max_samples // max(1, len(files)))
+                if len(frame) > per_file_cap:
+                    frame = frame.sample(n=per_file_cap, random_state=random_state)
 
             if per_file_cap is not None and len(frame) > per_file_cap:
                 frame = frame.sample(n=per_file_cap, random_state=random_state)
