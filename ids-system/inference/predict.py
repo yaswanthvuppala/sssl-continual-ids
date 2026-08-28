@@ -43,7 +43,7 @@ def load_heads(encoder_out_dim: int, ckpt_base: str, allow_demo: bool) -> dict:
         ("dos_ddos", build_dos_head, "dos"),
         ("port_scan", build_scan_head, "port_scan"),
     ]
-    if os.path.exists(os.path.join(ckpt_base, "intrusion")) or os.path.exists("./checkpoints/intrusion") or not allow_demo:
+    if os.path.exists(os.path.join(ckpt_base, "intrusion")) or not allow_demo:
         tasks.append(("intrusion", lambda embed_dim: build_classifier_head(embed_dim, 2, "intrusion_head"), "intrusion"))
     else:
         tasks.append(("exfiltration", build_exfiltration_head, "exfiltration"))
