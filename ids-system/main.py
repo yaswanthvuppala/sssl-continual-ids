@@ -94,10 +94,11 @@ def main():
                         choices=[
                             "ssl", "task", "evaluate", "predict", "benchmark",
                             "pipeline", "unsw", "kddcup99", "cicids2017",
-                            "visualize",
+                            "visualize", "train_anomaly", "zeroday", "zero_day",
                         ],
                         help="Operating mode")
     parser.add_argument("--task", type=str, default=None, help="Task name (for --mode task/evaluate/pipeline)")
+    parser.add_argument("--zeroday_attack", type=str, default=None, help="Target attack category to test as zero-day")
     parser.add_argument("--epochs", type=int, default=None, help="Override epoch count")
     parser.add_argument("--ssl_epochs", type=int, default=None, help="CSV pipeline SSL epochs")
     parser.add_argument("--task_epochs", type=int, default=None, help="CSV pipeline task epochs")
@@ -113,7 +114,7 @@ def main():
     args = parser.parse_args()
 
     python = sys.executable
-    dataset_name = args.dataset_name or "default"
+    dataset_name = args.dataset_name or args.dataset or "default"
 
     if args.mode == "ssl":
         cmd = [python, "training/train_ssl.py"]
@@ -149,6 +150,37 @@ def main():
         add_arg(cmd, "data_path", args.data_path)
         label_col = args.label_col or (("Label" if args.task == "intrusion" else "AttackCategory") if args.task else None)
         add_arg(cmd, "label_col", label_col)
+        cmd.extend(["--dataset_name", dataset_name])
+        run(cmd)
+
+    elif args.mode == "train_anomaly":
+        cmd = [python, "training/train_anomaly.py"]
+        add_arg(cmd, "dataset", args.dataset)
+        data_path = args.data_path or {
+            "cicids2017": "../CICIDS2017",
+            "kddcup99": "../KDDCUP99",
+            "unsw": "../IDS-UNSW_NB",
+        }.get(args.dataset)
+        add_arg(cmd, "data_path", data_path)
+        add_arg(cmd, "train_csv", args.train_csv)
+        add_arg(cmd, "label_col", args.label_col)
+        if args.epochs:
+            cmd.extend(["--epochs", str(args.epochs)])
+        cmd.extend(["--dataset_name", dataset_name])
+        run(cmd)
+
+    elif args.mode in {"zeroday", "zero_day"}:
+        cmd = [python, "training/evaluate_zeroday.py"]
+        add_arg(cmd, "dataset", args.dataset)
+        data_path = args.data_path or {
+            "cicids2017": "../CICIDS2017",
+            "kddcup99": "../KDDCUP99",
+            "unsw": "../IDS-UNSW_NB",
+        }.get(args.dataset)
+        add_arg(cmd, "data_path", data_path)
+        add_arg(cmd, "test_csv", args.test_csv)
+        add_arg(cmd, "label_col", args.label_col)
+        add_arg(cmd, "zeroday_attack", args.zeroday_attack)
         cmd.extend(["--dataset_name", dataset_name])
         run(cmd)
 

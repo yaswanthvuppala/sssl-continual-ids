@@ -149,14 +149,16 @@ ids-system/
 ├── training/
 │   ├── train_ssl.py         # Stage 1: SSL pretraining
 │   ├── train_task.py        # Stage 2: Task head training
+│   ├── train_anomaly.py     # Train & calibrate Anomaly Autoencoder for Zero-Day detection
 │   ├── evaluate.py          # Evaluation + threshold search
+│   ├── evaluate_zeroday.py  # Open-World & Zero-Day attack evaluation suite
 │   ├── visualize_metrics.py # All visualization plots
 │   └── benchmark.py         # End-to-end synthetic benchmark
 ├── inference/        # Inference engine + predict CLI
 ├── checkpoints/      # Saved model weights + GPM memory bank
 ├── logs/
 │   ├── eval/         # Confusion matrices + metrics JSON
-│   ├── plots/        # All visualization plots
+│   ├── plots/        # All visualization plots (ROC/PR curves, KDEs)
 │   └── task_*/       # TensorBoard logs + training history per task
 ├── main.py           # Master CLI entry point
 └── requirements.txt
@@ -170,7 +172,9 @@ ids-system/
 |------|---------|-------------|
 | `ssl` | `python main.py --mode ssl` | Stage 1: SSL pretraining |
 | `task` | `python main.py --mode task --task intrusion` | Train a specific task head |
+| `train_anomaly` | `python main.py --mode train_anomaly --dataset cicids2017` | Train Anomaly Autoencoder for Zero-Day defense |
 | `evaluate` | `python main.py --mode evaluate --task intrusion` | Evaluate with optimal threshold |
+| `zeroday` | `python main.py --mode zeroday --dataset cicids2017 --zeroday_attack infiltration` | Evaluate Zero-Day detection metrics & plots |
 | `visualize` | `python main.py --mode visualize --task intrusion` | Generate all plots |
 | `unsw` | `python main.py --mode unsw` | Full UNSW-NB15 pipeline (1 command) |
 | `cicids2017` | `python main.py --mode cicids2017` | Full CICIDS2017 pipeline |

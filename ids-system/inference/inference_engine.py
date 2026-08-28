@@ -133,12 +133,79 @@ class IDSInferenceEngine:
             severity=severity,
         )
 
-    def score_batch(self, flow_features: np.ndarray, flow_ids: Optional[List[str]] = None) -> List[IDSAlert]:
-        """Scores a batch of flows."""
+    def score_batch(self, flow_features: np.ndarray, flow_ids: Optional[List[str]] = None, batch_size: int = 4096) -> List[IDSAlert]:
+        """Scores a batch of flows using high-performance vectorized operations."""
+        n_samples = len(flow_features)
         if flow_ids is None:
-            flow_ids = [f"flow_{i}" for i in range(len(flow_features))]
+            flow_ids = [f"flow_{i}" for i in range(n_samples)]
+            
+        if n_samples == 0:
+            return []
+
         alerts = []
-        for i in range(len(flow_features)):
-            alert = self.score_single(flow_features[i], flow_ids[i])
-            alerts.append(alert)
+        for start_idx in range(0, n_samples, batch_size):
+            end_idx = min(start_idx + batch_size, n_samples)
+            batch_x = tf.constant(flow_features[start_idx:end_idx], dtype=tf.float32)
+            batch_emb = self.encoder(batch_x, training=False).numpy()
+
+            # Classifier heads evaluation in vector form
+            head_probs = {}
+            head_margins = {}
+            for attack_name, head in self.heads.items():
+                logits = head(tf.constant(batch_emb, dtype=tf.float32), training=False)
+                if self.temperatures and attack_name in self.temperatures:
+                    T = self.temperatures[attack_name]
+                    if T > 0:
+                        logits = logits / T
+                probs = tf.nn.softmax(logits, axis=-1).numpy()
+                atk_prob = probs[:, 1] if probs.shape[-1] == 2 else np.max(probs, axis=-1)
+                thresh = self.attack_thresholds.get(attack_name, self.default_threshold)
+                head_probs[attack_name] = atk_prob
+                head_margins[attack_name] = atk_prob - thresh
+
+            # Anomaly scoring in vector form
+            anomaly_scores = self.anomaly.score(batch_emb)
+            if np.isscalar(anomaly_scores):
+                anomaly_scores = np.array([anomaly_scores])
+
+            # Vectorized decision assignment
+            batch_len = end_idx - start_idx
+            for b in range(batch_len):
+                best_margin = -float('inf')
+                selected_type = None
+                selected_conf = 0.0
+                max_raw_conf = 0.0
+
+                for attack_name in self.heads.keys():
+                    prob = float(head_probs[attack_name][b])
+                    margin = float(head_margins[attack_name][b])
+                    thresh = self.attack_thresholds.get(attack_name, self.default_threshold)
+
+                    if prob > max_raw_conf:
+                        max_raw_conf = prob
+
+                    if prob >= thresh and margin > best_margin:
+                        best_margin = margin
+                        selected_type = attack_name
+                        selected_conf = prob
+
+                anom_sc = float(anomaly_scores[b])
+                if selected_type is not None:
+                    label = selected_type
+                    conf = selected_conf
+                elif anom_sc >= self.anomaly_threshold:
+                    label = "zero-day / unknown"
+                    conf = max_raw_conf
+                else:
+                    label = None
+                    conf = max_raw_conf
+
+                alerts.append(IDSAlert(
+                    flow_id=flow_ids[start_idx + b],
+                    attack_type=label,
+                    confidence=conf,
+                    anomaly_score=anom_sc,
+                    severity=compute_severity(anom_sc),
+                ))
+
         return alerts
