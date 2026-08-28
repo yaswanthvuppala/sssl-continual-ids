@@ -608,7 +608,6 @@ class FlowDatasetLoader:
                 for f in all_files:
                     fn = f.name.lower()
                     if yr_str in fn:
-                        # For training (2006-2010 in-distribution)
                         if sk == "train":
                             if f.name not in matched_files:
                                 matched_files[f.name] = f
