@@ -338,7 +338,6 @@ def main():
             raise ValueError("--data_path is required when --dataset is used")
         max_samples = args.max_labeled or (50000 if args.dataset == "anoshift" else None)
         df_labeled = loader.load_dataset(
-            args.dataset, split="train", label_col=args.label_col
             args.dataset, split="train", label_col=args.label_col, max_samples=max_samples
         )
         expected_input_dim = encoder.input_shape[-1]

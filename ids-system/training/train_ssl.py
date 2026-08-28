@@ -150,7 +150,6 @@ def main():
         if not args.data_path:
             raise ValueError("--data_path is required when --dataset is used")
         df = loader.load_dataset(
-            args.dataset, split="train", label_col=args.label_col
             args.dataset, split="train", label_col=args.label_col, max_samples=args.max_samples
         )
     elif args.train_csv:
