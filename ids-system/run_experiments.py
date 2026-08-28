@@ -128,19 +128,22 @@ def main():
 
         # ── 1. SSL Pretraining (Shared base encoder, 0% labels) ──
         base_exp_name = f"{ds_key}_base"
-        ssl_cmd = [
-            sys.executable, "training/train_ssl.py",
-            "--epochs", str(ssl_epochs),
-            "--batch_size", "256" if not args.quick else "64",
-            "--max_samples", str(max_samples_ssl),
-            "--dataset_name", base_exp_name
-        ]
-        if cfg["is_csv"]:
-            ssl_cmd.extend(["--train_csv", cfg["train_csv"], "--label_col", cfg["label_col"]])
+        ssl_enc_path = f"./checkpoints/{base_exp_name}/encoder_frozen.keras"
+        if os.path.exists(ssl_enc_path):
+            print(f"\n[INFO] SSL Pretrained base encoder exists at {ssl_enc_path}. Skipping pretraining.")
         else:
-            ssl_cmd.extend(["--dataset", ds_key, "--data_path", cfg["data_path"], "--label_col", cfg["label_col"]])
-
-        run_cmd(ssl_cmd, desc=f"SSL Pretraining for {cfg['name']}")
+            ssl_cmd = [
+                sys.executable, "training/train_ssl.py",
+                "--epochs", str(ssl_epochs),
+                "--batch_size", "256" if not args.quick else "64",
+                "--max_samples", str(max_samples_ssl),
+                "--dataset_name", base_exp_name
+            ]
+            if cfg["is_csv"]:
+                ssl_cmd.extend(["--train_csv", cfg["train_csv"], "--label_col", cfg["label_col"]])
+            else:
+                ssl_cmd.extend(["--dataset", ds_key, "--data_path", cfg["data_path"], "--label_col", cfg["label_col"]])
+            run_cmd(ssl_cmd, desc=f"SSL Pretraining for {cfg['name']}")
 
         # ── 2. Run Experiments for each requested label ratio ──
         for ratio in args.label_ratios:
@@ -150,18 +153,21 @@ def main():
 
             if ratio == 0.0:
                 # ── 0% Labeled Regime: Unsupervised SSL + Anomaly Autoencoder + Zero-Day Detector ──
-                # Train Anomaly Autoencoder
-                ae_cmd = [
-                    sys.executable, "training/train_anomaly.py",
-                    "--epochs", str(anomaly_epochs),
-                    "--latent_dim", "16",
-                    "--dataset_name", base_exp_name
-                ]
-                if cfg["is_csv"]:
-                    ae_cmd.extend(["--train_csv", cfg["train_csv"], "--label_col", cfg["label_col"]])
+                ae_path = f"./checkpoints/{base_exp_name}/anomaly_ae.keras"
+                if os.path.exists(ae_path):
+                    print(f"[INFO] Anomaly Autoencoder exists at {ae_path}. Skipping AE training.")
                 else:
-                    ae_cmd.extend(["--dataset", ds_key, "--data_path", cfg["data_path"]])
-                run_cmd(ae_cmd, desc=f"Train Anomaly Autoencoder (0% labels) for {cfg['name']}")
+                    ae_cmd = [
+                        sys.executable, "training/train_anomaly.py",
+                        "--epochs", str(anomaly_epochs),
+                        "--latent_dim", "16",
+                        "--dataset_name", base_exp_name
+                    ]
+                    if cfg["is_csv"]:
+                        ae_cmd.extend(["--train_csv", cfg["train_csv"], "--label_col", cfg["label_col"]])
+                    else:
+                        ae_cmd.extend(["--dataset", ds_key, "--data_path", cfg["data_path"]])
+                    run_cmd(ae_cmd, desc=f"Train Anomaly Autoencoder (0% labels) for {cfg['name']}")
 
                 # Evaluate Zero-Day Threat Catching
                 zd_cmd = [
