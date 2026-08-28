@@ -179,7 +179,6 @@ class FlowDatasetLoader:
         elif dataset_key in {"cicids2017", "cic2017"}:
             df = self._load_cicids2017(split, test_size, random_state)
         elif dataset_key in {"anoshift", "kyoto", "kyoto2006", "kyoto2016"}:
-            df = self._load_anoshift(split, test_size, random_state)
             df = self._load_anoshift(split, test_size, random_state, max_samples=max_samples)
         else:
             raise ValueError(
