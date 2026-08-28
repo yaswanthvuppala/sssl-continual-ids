@@ -619,6 +619,7 @@ class FlowDatasetLoader:
 
         raise FileNotFoundError(
             f"No AnoShift data files (.parquet or .csv) found in '{base}' for split '{split}'.\n"
+            f"Searched directories: {[str(d) for d in search_dirs]}"
             f"Searched directories: {[str(d) for d in search_dirs]}\n"
             "Run 'python data/download_anoshift.py --save_dir ./data/anoshift' first."
         )
