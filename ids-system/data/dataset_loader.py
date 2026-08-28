@@ -179,6 +179,7 @@ class FlowDatasetLoader:
         elif dataset_key in {"cicids2017", "cic2017"}:
             df = self._load_cicids2017(split, test_size, random_state)
         elif dataset_key in {"anoshift", "kyoto", "kyoto2006", "kyoto2016"}:
+            df = self._load_anoshift(split, test_size, random_state)
             df = self._load_anoshift(split, test_size, random_state, max_samples=max_samples)
         else:
             raise ValueError(
@@ -422,6 +423,7 @@ class FlowDatasetLoader:
         return "other"
 
     def _load_anoshift(
+        self, split: str, test_size: float = 0.2, random_state: int = 42
         self, split: str, test_size: float = 0.2, random_state: int = 42, max_samples: int = None
     ) -> pd.DataFrame:
         """
@@ -437,6 +439,7 @@ class FlowDatasetLoader:
         files = self._resolve_anoshift_files(split)
         print(f"Loading {len(files)} AnoShift {split} data file(s)...")
         frames = []
+        for filepath in files:
         total_loaded = 0
         for idx, filepath in enumerate(files):
             print(f"  [{idx+1}/{len(files)}] Loading {filepath.name}...", end="", flush=True)
@@ -446,6 +449,7 @@ class FlowDatasetLoader:
                 else:
                     frame = pd.read_csv(filepath, low_memory=False)
             except Exception as e:
+                print(f"[WARN] Error reading {filepath}: {e}")
                 print(f" ERROR: {e}")
                 continue
             frame.columns = [str(c).strip() for c in frame.columns]
