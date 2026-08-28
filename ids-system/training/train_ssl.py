@@ -129,6 +129,8 @@ def main():
     parser.add_argument("--label_col", type=str, default="Label", help="Label column in the training CSV")
     parser.add_argument("--preprocessor_path", type=str, default=None,
                         help="Where to save the fitted preprocessor")
+    parser.add_argument("--max_samples", type=int, default=100000,
+                        help="Cap on training samples for memory efficiency (default: 100000)")
     parser.add_argument("--dataset_name", type=str, default="default",
                         help="Dataset identifier for scoping output paths")
     args = parser.parse_args()
