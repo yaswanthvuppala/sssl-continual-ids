@@ -465,7 +465,7 @@ def main():
         X_l = X_l[:args.max_labeled]
         y_l_binary = y_l_binary[:args.max_labeled]
     
-    print(f"Dataset split summary -> Labeled: {len(X_l):,} samples ({len(X_l)/(len(X_l)+len(X_u))*100:.1f}%) | Unlabeled: {len(X_u):,} samples | Validation: {len(X_val):,} samples")
+    print(f"Dataset split summary -> Labeled: {len(X_l)} samples | Unlabeled: {len(X_u)} samples | Validation: {len(X_val)} samples")
     
     # Compute class weights (inverse frequency) to address class imbalance
     unique_classes, class_counts = np.unique(y_l_binary, return_counts=True)
