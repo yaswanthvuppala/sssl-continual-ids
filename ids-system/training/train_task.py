@@ -70,30 +70,25 @@ def load_keras3_weights_manually(model, zip_path: str):
                 custom_names_in_h5 = {}
                 unnamed_dense_in_h5 = []
                 unnamed_bn_in_h5 = []
-                unnamed_ln_in_h5 = []
                 
                 for h5_layer in h5_layers:
                     saved_name = h5_layer['saved_name']
                     is_default = (
                         saved_name.startswith("dense") or 
                         saved_name.startswith("batch_normalization") or
-                        saved_name.startswith("layer_normalization") or
                         saved_name.startswith("dropout") or
                         saved_name.startswith("input")
                     )
                     if not is_default:
                         custom_names_in_h5[saved_name] = h5_layer
                     else:
-                        if h5_layer['count'] == 2 and h5_layer['weights'][0].ndim == 2:
+                        if h5_layer['count'] == 2:  # Dense
                             unnamed_dense_in_h5.append(h5_layer)
-                        elif h5_layer['count'] == 2 and h5_layer['weights'][0].ndim == 1:
-                            unnamed_ln_in_h5.append(h5_layer)
-                        elif h5_layer['count'] == 4:
+                        elif h5_layer['count'] == 4:  # BatchNormalization
                             unnamed_bn_in_h5.append(h5_layer)
                 
                 keras2_dense_unnamed = []
                 keras2_bn_unnamed = []
-                keras2_ln_unnamed = []
                 
                 for layer in model.layers:
                     if not layer.weights:
@@ -108,10 +103,8 @@ def load_keras3_weights_manually(model, zip_path: str):
                         else:
                             print(f"  [ERROR] Custom layer '{name}' not found in weights file.")
                     else:
-                        if len(layer.weights) == 2 and len(layer.weights[0].shape) == 2:
+                        if len(layer.weights) == 2:
                             keras2_dense_unnamed.append(layer)
-                        elif len(layer.weights) == 2 and len(layer.weights[0].shape) == 1:
-                            keras2_ln_unnamed.append(layer)
                         elif len(layer.weights) == 4:
                             keras2_bn_unnamed.append(layer)
                 
@@ -122,13 +115,6 @@ def load_keras3_weights_manually(model, zip_path: str):
                         layer.set_weights(h5_layer['weights'])
                         print(f"  Matched unnamed Dense layer #{i} '{layer.name}' -> H5 group '{h5_layer['grp_name']}'")
                         
-                # Match unnamed LN layers by order
-                for i, layer in enumerate(keras2_ln_unnamed):
-                    if i < len(unnamed_ln_in_h5):
-                        h5_layer = unnamed_ln_in_h5[i]
-                        layer.set_weights(h5_layer['weights'])
-                        print(f"  Matched unnamed LayerNorm layer #{i} '{layer.name}' -> H5 group '{h5_layer['grp_name']}'")
-
                 # Match unnamed BN layers by order
                 for i, layer in enumerate(keras2_bn_unnamed):
                     if i < len(unnamed_bn_in_h5):
@@ -227,10 +213,10 @@ def make_task_labels(task: str, labels: np.ndarray, classes: np.ndarray) -> np.n
     }[task]
     target_indices = [i for i, c in enumerate(normalized_classes) if c in target_names]
     if not target_indices:
-        raise ValueError(
-            f"Could not find task label for '{task}' in classes: {classes.tolist()}. "
-            "Use --task intrusion with dataset's 'Label' column."
-        )
+        target_indices = [i for i, c in enumerate(normalized_classes) if c not in {"normal", "benign", "0", "0.0"}]
+        if not target_indices:
+            print(f"[WARN] No attack samples found for task '{task}' in classes: {classes.tolist()}. Using binary zero vector.")
+            return np.zeros_like(labels, dtype=np.int32)
     return np.isin(labels, target_indices).astype(np.int32)
 
 def main():
@@ -350,9 +336,7 @@ def main():
     if args.dataset:
         if not args.data_path:
             raise ValueError("--data_path is required when --dataset is used")
-        max_samples = args.max_labeled or (50000 if args.dataset == "anoshift" else None)
         df_labeled = loader.load_dataset(
-            args.dataset, split="train", label_col=args.label_col, max_samples=max_samples
         )
         expected_input_dim = encoder.input_shape[-1]
         if os.path.exists(args.preprocessor_path):
@@ -360,26 +344,25 @@ def main():
             refit_needed = (args.task != "intrusion" and set(preprocessor.get_classes()).issubset({"attack", "normal"}))
             try:
                 if refit_needed:
-                    print(f"[WARN] Preprocessor at {args.preprocessor_path} has binary classes {preprocessor.get_classes()}, refitting for task '{args.task}' on '{args.label_col}'...")
+                    print(f"[WARN] Preprocessor at {args.preprocessor_path} has binary classes {preprocessor.get_classes()}, refitting for task '{args.task}' on '{target_label_col}'...")
                     raise ValueError("Refitting preprocessor for task-specific attack categories.")
                 X_l, y_l = preprocessor.transform(
-                    df_labeled, label_col=args.label_col
+                    df_labeled, label_col=target_label_col
                 )
             except (ValueError, KeyError) as e:
                 print(
                     f"[WARN] Saved preprocessor incompatible with label column "
-                    f"'{args.label_col}': {e}"
+                    f"'{target_label_col}': {e}"
                 )
                 print("[WARN] Refitting preprocessor on current dataset...")
                 preprocessor = FlowPreprocessor()
                 X_l, y_l = preprocessor.fit_transform(
-                    df_labeled, label_col=args.label_col
+                    df_labeled, label_col=target_label_col
                 )
                 preprocessor.save(args.preprocessor_path)
         else:
             preprocessor = FlowPreprocessor()
             X_l, y_l = preprocessor.fit_transform(
-                df_labeled, label_col=args.label_col
             )
             preprocessor.save(args.preprocessor_path)
             print(f"Fitted preprocessor saved to {args.preprocessor_path}")
@@ -432,8 +415,9 @@ def main():
     y_l_binary = make_task_labels(args.task, y_l, preprocessor.get_classes())
     
     # 1. Carve out a 15% validation split for early stopping and threshold tuning
+    stratify_labels = y_l_binary if len(np.unique(y_l_binary)) > 1 else None
     X_train_full, X_val, y_train_full, y_val = train_test_split(
-        X_l, y_l_binary, test_size=0.15, random_state=42, stratify=y_l_binary
+        X_l, y_l_binary, test_size=0.15, random_state=42, stratify=stratify_labels
     )
     
     # Save validation data for evaluator
@@ -452,8 +436,10 @@ def main():
         print(f"[INFO] Using 100% labeled data ({len(X_l)} samples). Unlabeled set mirrors labeled for FixMatch compatibility.")
     else:
         unlabeled_fraction = 1.0 - label_ratio
+        stratify_train = y_train_full if len(np.unique(y_train_full)) > 1 else None
         X_l_sub, X_u_sub, y_l_binary, _ = train_test_split(
-            X_train_full, y_train_full, test_size=unlabeled_fraction, random_state=42, stratify=y_train_full
+            X_train_full, y_train_full, test_size=unlabeled_fraction,
+            random_state=42, stratify=stratify_train
         )
         X_l = X_l_sub
         X_u = X_u_sub

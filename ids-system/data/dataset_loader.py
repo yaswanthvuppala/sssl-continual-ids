@@ -608,14 +608,12 @@ class FlowDatasetLoader:
                 for f in all_files:
                     fn = f.name.lower()
                     if yr_str in fn:
-                        # For training, ignore validation and test files
+                        # For training (2006-2010 in-distribution)
                         if sk == "train":
-                            if "valid" in fn or "test" in fn:
-                                continue
                             if f.name not in matched_files:
                                 matched_files[f.name] = f
                         elif sk in {"test", "iid", "iid_test"}:
-                            if ("valid" in fn or "test" in fn) and f.name not in matched_files:
+                            if ("valid" in fn or "test" in fn or "iid" in fn) and f.name not in matched_files:
                                 matched_files[f.name] = f
                         elif sk in {"near", "near_test", "far", "far_test"}:
                             if f.name not in matched_files:
@@ -633,8 +631,6 @@ class FlowDatasetLoader:
                 if f.is_file() and f.suffix.lower() in {".parquet", ".csv"}:
                     fn = f.name.lower()
                     if sk == "train" and ("train" in fn or any(str(y) in fn for y in [2006, 2007, 2008, 2009, 2010])):
-                        if "valid" in fn or "test" in fn:
-                            continue
                         if f.name not in matched_files:
                             matched_files[f.name] = f
                     elif sk in {"test", "iid", "iid_test"} and ("valid" in fn or "test" in fn or "iid" in fn):
