@@ -94,8 +94,44 @@ KDD_ATTACK_CATEGORIES = {
 }
 
 
+KYOTO_FEATURE_COLUMNS = [
+    "duration",
+    "service",
+    "src_bytes",
+    "dst_bytes",
+    "count",
+    "same_srv_rate",
+    "serror_rate",
+    "srv_serror_rate",
+    "dst_host_count",
+    "dst_host_srv_count",
+    "dst_host_same_src_port_rate",
+    "dst_host_serror_rate",
+    "dst_host_srv_serror_rate",
+    "flag",
+    "ids_detection",
+    "malware_detection",
+    "ashula_detection",
+    "other_info",
+    "label",
+]
+
+KYOTO_CATEGORICAL_COLS = [
+    "service",
+    "flag",
+    "ids_detection",
+    "malware_detection",
+    "ashula_detection",
+    "1",
+    "13",
+    "14",
+    "15",
+    "16",
+]
+
+
 class FlowDatasetLoader:
-    """Loads generic CSV, CICIDS2017, and KDD Cup 99 flow datasets."""
+    """Loads generic CSV, Parquet, AnoShift (Kyoto 2006+), CICIDS2017, and KDD Cup 99 flow datasets."""
 
     def __init__(self, data_path: str, chunk_size: int = 100000):
         self.data_path = data_path
@@ -129,17 +165,24 @@ class FlowDatasetLoader:
           - AttackCategory: normalized attack family
         """
         dataset_key = dataset.strip().lower().replace("-", "").replace("_", "")
-        if split not in {"train", "test"}:
-            raise ValueError("split must be either 'train' or 'test'")
+        valid_splits = {
+            "train", "test", "iid", "iid_test",
+            "near", "near_test", "far", "far_test",
+            "all", "all_test",
+        }
+        if split not in valid_splits:
+            raise ValueError(f"split must be one of {valid_splits}, got '{split}'")
 
         if dataset_key in {"kddcup99", "kdd99"}:
             df = self._load_kddcup99(split)
         elif dataset_key in {"cicids2017", "cic2017"}:
             df = self._load_cicids2017(split, test_size, random_state)
+        elif dataset_key in {"anoshift", "kyoto", "kyoto2006", "kyoto2016"}:
+            df = self._load_anoshift(split, test_size, random_state)
         else:
             raise ValueError(
                 f"Unsupported dataset '{dataset}'. "
-                "Supported datasets: cicids2017, kddcup99."
+                "Supported datasets: anoshift, cicids2017, kddcup99."
             )
 
         self._validate_label_column(df, label_col)
@@ -377,6 +420,273 @@ class FlowDatasetLoader:
             return "botnet"
         return "other"
 
+    def _load_anoshift(
+        self, split: str, test_size: float = 0.2, random_state: int = 42
+    ) -> pd.DataFrame:
+        """
+        Load AnoShift dataset (Kyoto 2006+ 10-year longitudinal benchmark).
+
+        Splits:
+          - 'train': In-Distribution (2006-2010 normal flow training files)
+          - 'test' / 'iid' / 'iid_test': In-Distribution (2006-2010 valid/test files)
+          - 'near' / 'near_test': Near-Distribution (2011-2013 test files)
+          - 'far' / 'far_test': Far-Distribution (2014-2015 test files)
+          - 'all' / 'all_test': All test splits combined (2006-2015)
+        """
+        files = self._resolve_anoshift_files(split)
+        print(f"Loading {len(files)} AnoShift {split} data file(s)...")
+        frames = []
+        for filepath in files:
+            try:
+                if filepath.suffix.lower() == ".parquet":
+                    frame = pd.read_parquet(filepath)
+                else:
+                    frame = pd.read_csv(filepath, low_memory=False)
+            except Exception as e:
+                print(f"[WARN] Error reading {filepath}: {e}")
+                continue
+            frame.columns = [str(c).strip() for c in frame.columns]
+            frames.append(frame)
+
+        if not frames:
+            raise FileNotFoundError(f"No AnoShift files could be loaded for split '{split}' from {self.data_path}")
+
+        df = pd.concat(frames, ignore_index=True)
+
+        # Identify label column (Kyoto standard is '18' or 'label' / 'Label')
+        label_col = None
+        for candidate in ["18", "label", "Label", "LABEL", "target", "class"]:
+            if candidate in df.columns:
+                label_col = candidate
+                break
+
+        if label_col is None:
+            label_col = df.columns[-1]
+            print(f"[INFO] Auto-selected column '{label_col}' as AnoShift label column.")
+
+        # Standardize labels
+        raw_labels = df[label_col].astype(str).str.strip().str.rstrip(".").str.lower()
+
+        # Kyoto / AnoShift label mapping:
+        # 1 = normal, -1 = known signature attack, -2 = unknown zero-day honeypot attack
+        is_normal = raw_labels.isin(["1", "1.0", "normal", "benign", "0", "0.0"])
+        is_zeroday = raw_labels.isin(["-2", "-2.0", "unknown", "zero_day", "zeroday", "unknown_attack"])
+        is_attack = ~is_normal
+
+        df["Label"] = np.where(is_normal, "normal", "attack")
+        df["AttackLabel"] = np.where(
+            is_normal, "normal",
+            np.where(is_zeroday, "zero_day", "known_attack")
+        )
+
+        # Helper to extract numeric feature column values safely
+        def _get_col_numeric(aliases):
+            for a in aliases:
+                if a in df.columns:
+                    return pd.to_numeric(df[a], errors='coerce').fillna(0.0)
+            return pd.Series(0.0, index=df.index)
+
+        serror = _get_col_numeric(["serror_rate", "6", 6, "srv_serror_rate"])
+        rerror = _get_col_numeric(["rerror_rate", "7", 7, "srv_rerror_rate"])
+        diff_srv = _get_col_numeric(["diff_srv_rate", "srv_diff_host_rate", "dst_host_diff_srv_rate", "5", 5, "10", 10])
+
+        # Map to 3 continuous task categories: normal, dos, port_scan, zero_day
+        is_dos = is_attack & ((serror >= 0.2) | (rerror >= 0.2))
+        is_scan = is_attack & (~is_dos) & (diff_srv >= 0.2)
+
+        df["AttackCategory"] = np.where(
+            is_normal, "normal",
+            np.where(
+                is_zeroday, "zero_day",
+                np.where(is_dos, "dos", np.where(is_scan, "port_scan", "dos"))
+            )
+        )
+
+        return df
+
+    def _resolve_anoshift_files(self, split: str) -> List[Path]:
+        base = Path(self.data_path)
+        if base.is_file():
+            return [base]
+
+        sk = split.lower().replace("-", "_")
+
+        search_dirs = [base]
+        for sub in [
+            "subset", "subset_I10", "subset_I33", "subset_I90",
+            "anoshift", "data", "anoshift_I10", "anoshift_I33", "anoshift_I90",
+        ]:
+            candidate_dir = base / sub
+            if candidate_dir.exists() and candidate_dir.is_dir() and candidate_dir not in search_dirs:
+                search_dirs.append(candidate_dir)
+
+        # Colab & workspace fallback paths
+        for d in [
+            Path("/content/anoshift"),
+            Path("/content/anoshift/subset"),
+            Path("/content/data/anoshift_I10"),
+            Path("/content/data/anoshift_I33"),
+            Path("/content/data/anoshift_I90"),
+            Path("/content/drive/MyDrive/AnoShift"),
+            Path("/content/drive/MyDrive/AnoShift/subset"),
+            Path.cwd() / "anoshift",
+            Path.cwd().parent / "AnoShift",
+            Path.cwd().parent / "anoshift",
+        ]:
+            if d.exists() and d.is_dir() and d not in search_dirs:
+                search_dirs.append(d)
+
+        if sk == "train":
+            target_years = [2006, 2007, 2008, 2009, 2010]
+        elif sk in {"test", "iid", "iid_test"}:
+            target_years = [2006, 2007, 2008, 2009, 2010]
+        elif sk in {"near", "near_test"}:
+            target_years = [2011, 2012, 2013]
+        elif sk in {"far", "far_test"}:
+            target_years = [2014, 2015]
+        else:  # all, all_test
+            target_years = list(range(2006, 2016))
+
+        matched_files = []
+        for sdir in search_dirs:
+            all_files = [p for p in sdir.glob("*") if p.is_file() and p.suffix.lower() in {".parquet", ".csv"}]
+            for yr in target_years:
+                yr_str = str(yr)
+                for f in all_files:
+                    fn = f.name.lower()
+                    if yr_str in fn:
+                        if sk == "train" and f not in matched_files:
+                            matched_files.append(f)
+                        elif sk in {"test", "iid", "iid_test"} and ("valid" in fn or "test" in fn) and f not in matched_files:
+                            matched_files.append(f)
+                        elif sk in {"near", "near_test", "far", "far_test"} and f not in matched_files:
+                            matched_files.append(f)
+                        elif sk in {"all", "all_test"} and f not in matched_files:
+                            matched_files.append(f)
+
+        if matched_files:
+            return sorted(matched_files)
+
+        # Broad search across search dirs for any parquet or csv matching split keyword
+        for sdir in search_dirs:
+            for f in sdir.rglob("*"):
+                if f.is_file() and f.suffix.lower() in {".parquet", ".csv"}:
+                    fn = f.name.lower()
+                    if sk == "train" and ("train" in fn or any(str(y) in fn for y in [2006, 2007, 2008, 2009, 2010])):
+                        matched_files.append(f)
+                    elif sk in {"test", "iid", "iid_test"} and ("valid" in fn or "test" in fn or "iid" in fn):
+                        matched_files.append(f)
+                    elif sk in {"near", "near_test"} and ("near" in fn or any(str(y) in fn for y in [2011, 2012, 2013])):
+                        matched_files.append(f)
+                    elif sk in {"far", "far_test"} and ("far" in fn or any(str(y) in fn for y in [2014, 2015])):
+                        matched_files.append(f)
+                    elif sk in {"all", "all_test"}:
+                        matched_files.append(f)
+
+        if matched_files:
+            return sorted(list(set(matched_files)))
+
+        # Fallback: return any available parquet/csv data files
+        for sdir in search_dirs:
+            any_data = [p for p in sdir.glob("*.parquet")] + [p for p in sdir.glob("*.csv")]
+            if any_data:
+                print(f"[INFO] Using available data files for split '{split}': {[p.name for p in any_data]}")
+                return sorted(any_data)
+
+        raise FileNotFoundError(
+            f"No AnoShift data files (.parquet or .csv) found in '{base}' for split '{split}'.\n"
+            f"Searched directories: {[str(d) for d in search_dirs]}"
+        )
+
+    def create_synthetic_anoshift_data(
+        self, output_dir: str, num_samples_per_year: int = 1000
+    ) -> List[str]:
+        """
+        Generates synthetic AnoShift 10-year longitudinal benchmark parquet files (2006 to 2015).
+        Includes normal (1), signature attacks (-1), zero-day attacks (-2), and concept drift.
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        created_files = []
+        np.random.seed(42)
+
+        services = ["http", "smtp", "dns", "ftp", "ssh", "telnet", "other"]
+        flags = ["SF", "S0", "REJ", "RSTO", "RSTR", "SH"]
+
+        for year in range(2006, 2016):
+            # Concept drift factor increases with year
+            drift = (year - 2006) * 0.15
+
+            # 1. Generate regular subset
+            n_samples = num_samples_per_year
+            # For 2006-2010: train split is 100% normal
+            # For 2011-2015: contains normal + attacks
+            if year <= 2010:
+                labels = np.ones(n_samples, dtype=np.int32)
+            else:
+                p_norm = max(0.4, 0.7 - (year - 2010) * 0.05)
+                p_known = max(0.1, 0.2 + (year - 2010) * 0.02)
+                p_zeroday = 1.0 - p_norm - p_known
+                labels = np.random.choice([1, -1, -2], size=n_samples, p=[p_norm, p_known, p_zeroday])
+
+            data = {
+                "0": np.random.exponential(scale=2.0 + drift, size=n_samples).astype(np.float32),  # duration
+                "1": np.random.choice(services, size=n_samples),                                     # service
+                "2": np.random.lognormal(mean=5.0 + drift, sigma=1.0, size=n_samples).astype(np.float32), # src_bytes
+                "3": np.random.lognormal(mean=6.0 + drift, sigma=1.0, size=n_samples).astype(np.float32), # dst_bytes
+                "4": np.random.poisson(lam=10 + int(drift * 5), size=n_samples).astype(np.float32),       # count
+                "5": np.random.uniform(0.0, 1.0, size=n_samples).astype(np.float32),                      # same_srv_rate
+                "6": np.random.uniform(0.0, 0.5, size=n_samples).astype(np.float32),                      # serror_rate
+                "7": np.random.uniform(0.0, 0.5, size=n_samples).astype(np.float32),                      # srv_serror_rate
+                "8": np.random.randint(1, 255, size=n_samples).astype(np.float32),                         # dst_host_count
+                "9": np.random.randint(1, 255, size=n_samples).astype(np.float32),                         # dst_host_srv_count
+                "10": np.random.uniform(0.0, 1.0, size=n_samples).astype(np.float32),                     # dst_host_same_src_port_rate
+                "11": np.random.uniform(0.0, 0.3, size=n_samples).astype(np.float32),                     # dst_host_serror_rate
+                "12": np.random.uniform(0.0, 0.3, size=n_samples).astype(np.float32),                     # dst_host_srv_serror_rate
+                "13": np.random.choice(flags, size=n_samples),                                             # flag
+                "14": np.random.choice([0, 1], size=n_samples, p=[0.9, 0.1]),                             # ids_detection
+                "15": np.random.choice([0, 1], size=n_samples, p=[0.95, 0.05]),                           # malware_detection
+                "16": np.random.choice([0, 1], size=n_samples, p=[0.97, 0.03]),                           # ashula_detection
+                "17": np.random.choice([0, 1], size=n_samples, p=[0.99, 0.01]),                           # other
+                "18": labels,                                                                              # label
+            }
+            df_subset = pd.DataFrame(data)
+            subset_file = os.path.join(output_dir, f"{year}_subset.parquet")
+            df_subset.to_parquet(subset_file, index=False)
+            created_files.append(subset_file)
+
+            # 2. For 2006-2010, generate valid/test set (with both normal & attacks)
+            if year <= 2010:
+                n_val = n_samples // 2
+                val_labels = np.random.choice([1, -1, -2], size=n_val, p=[0.75, 0.20, 0.05])
+                val_data = {
+                    "0": np.random.exponential(scale=2.0 + drift, size=n_val).astype(np.float32),
+                    "1": np.random.choice(services, size=n_val),
+                    "2": np.random.lognormal(mean=5.0 + drift, sigma=1.0, size=n_val).astype(np.float32),
+                    "3": np.random.lognormal(mean=6.0 + drift, sigma=1.0, size=n_val).astype(np.float32),
+                    "4": np.random.poisson(lam=10 + int(drift * 5), size=n_val).astype(np.float32),
+                    "5": np.random.uniform(0.0, 1.0, size=n_val).astype(np.float32),
+                    "6": np.random.uniform(0.0, 0.5, size=n_val).astype(np.float32),
+                    "7": np.random.uniform(0.0, 0.5, size=n_val).astype(np.float32),
+                    "8": np.random.randint(1, 255, size=n_val).astype(np.float32),
+                    "9": np.random.randint(1, 255, size=n_val).astype(np.float32),
+                    "10": np.random.uniform(0.0, 1.0, size=n_val).astype(np.float32),
+                    "11": np.random.uniform(0.0, 0.3, size=n_val).astype(np.float32),
+                    "12": np.random.uniform(0.0, 0.3, size=n_val).astype(np.float32),
+                    "13": np.random.choice(flags, size=n_val),
+                    "14": np.random.choice([0, 1], size=n_val, p=[0.9, 0.1]),
+                    "15": np.random.choice([0, 1], size=n_val, p=[0.95, 0.05]),
+                    "16": np.random.choice([0, 1], size=n_val, p=[0.97, 0.03]),
+                    "17": np.random.choice([0, 1], size=n_val, p=[0.99, 0.01]),
+                    "18": val_labels,
+                }
+                df_val = pd.DataFrame(val_data)
+                val_file = os.path.join(output_dir, f"{year}_subset_valid.parquet")
+                df_val.to_parquet(val_file, index=False)
+                created_files.append(val_file)
+
+        print(f"Generated {len(created_files)} synthetic AnoShift parquet files under: {output_dir}")
+        return created_files
+
     @staticmethod
     def _validate_label_column(df: pd.DataFrame, label_col: str):
         if label_col is not None and label_col not in df.columns:
@@ -410,6 +720,7 @@ class FlowDatasetLoader:
 
 
 if __name__ == "__main__":
+
     loader = FlowDatasetLoader(data_path=".")
     df = loader.create_synthetic_data(num_samples=100)
     print(f"Dataset Shape: {df.shape}")

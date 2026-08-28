@@ -137,7 +137,7 @@ def train_anomaly_detector(
 
 def main():
     parser = argparse.ArgumentParser(description="Train Anomaly Autoencoder for Zero-Day Detection")
-    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw"], default=None)
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw", "anoshift"], default=None)
     parser.add_argument("--data_path", type=str, default=None)
     parser.add_argument("--train_csv", type=str, default=None)
     parser.add_argument("--label_col", type=str, default=None)
@@ -156,6 +156,7 @@ def main():
             "cicids2017": "../CICIDS2017",
             "kddcup99": "../KDDCUP99",
             "unsw": "../IDS-UNSW_NB",
+            "anoshift": "./data/anoshift",
         }.get(args.dataset)
 
     train_csv = args.train_csv

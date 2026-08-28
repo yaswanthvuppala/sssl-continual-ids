@@ -282,13 +282,13 @@ def evaluate_single_zeroday(
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate SSSL-IDS under Zero-Day Attacks")
-    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw"], default=None)
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw", "anoshift"], default=None)
     parser.add_argument("--data_path", type=str, default=None)
     parser.add_argument("--test_csv", type=str, default=None)
     parser.add_argument("--label_col", type=str, default=None)
     parser.add_argument("--dataset_name", type=str, default=None)
     parser.add_argument("--zeroday_attack", type=str, default=None,
-                        help="Specific attack category to treat as zero-day (e.g. infiltration, web_attack, r2l, u2r, fuzzers). If omitted, evaluates all non-trained classes.")
+                        help="Specific attack category to treat as zero-day (e.g. zero_day, infiltration, web_attack, r2l, u2r, fuzzers). If omitted, evaluates all non-trained classes.")
     parser.add_argument("--anomaly_threshold", type=float, default=None,
                         help="Override anomaly autoencoder decision threshold")
     args = parser.parse_args()
@@ -334,6 +334,7 @@ def main():
             "cicids2017": "../CICIDS2017",
             "kddcup99": "../KDDCUP99",
             "unsw": "../IDS-UNSW_NB",
+            "anoshift": "./data/anoshift",
         }.get(args.dataset)
         train_csv = args.test_csv if args.dataset == "unsw" else None
         anomaly_detector = train_anomaly_detector(
@@ -363,6 +364,7 @@ def main():
             "cicids2017": "../CICIDS2017",
             "kddcup99": "../KDDCUP99",
             "unsw": "../IDS-UNSW_NB",
+            "anoshift": "./data/anoshift",
         }.get(args.dataset, ".")
     else:
         data_path = args.data_path or "."
@@ -370,7 +372,7 @@ def main():
     loader = FlowDatasetLoader(data_path=data_path)
     if args.test_csv:
         df = loader.load_csv(args.test_csv, label_col=args.label_col)
-    elif args.dataset in {"cicids2017", "kddcup99"}:
+    elif args.dataset in {"cicids2017", "kddcup99", "anoshift"}:
         df = loader.load_dataset(args.dataset, split="test", label_col=args.label_col or "Label")
     elif args.dataset == "unsw":
         df = loader.load_csv("../IDS-UNSW_NB/UNSW_NB15_testing-set.csv", label_col=args.label_col)

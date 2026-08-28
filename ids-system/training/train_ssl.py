@@ -122,7 +122,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=10, help="Number of pretraining epochs")
     parser.add_argument("--batch_size", type=int, default=256, help="Batch size")
     parser.add_argument("--train_csv", type=str, default=None, help="Training CSV for real dataset pretraining")
-    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw"],
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw", "anoshift"],
                         default=None, help="Load a supported raw dataset")
     parser.add_argument("--data_path", type=str, default=None,
                         help="Dataset directory or raw data file")
