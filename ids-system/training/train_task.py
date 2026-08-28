@@ -375,6 +375,7 @@ def main():
     y_l_binary = make_task_labels(args.task, y_l, preprocessor.get_classes())
     
     # 1. Carve out a 15% validation split for early stopping and threshold tuning
+    stratify_labels = y_l_binary if len(np.unique(y_l_binary)) > 1 else None
     X_train_full, X_val, y_train_full, y_val = train_test_split(
         X_l, y_l_binary, test_size=0.15, random_state=42, stratify=stratify_labels
     )
@@ -388,6 +389,7 @@ def main():
     # 2. Split train set into labeled (20%) and unlabeled (80%) subsets to prevent X_u = X_l feedback leakage
     stratify_train = y_train_full if len(np.unique(y_train_full)) > 1 else None
     X_l_sub, X_u_sub, y_l_binary, _ = train_test_split(
+        X_train_full, y_train_full, test_size=0.80, random_state=42, stratify=stratify_train
     )
     X_l = X_l_sub
     X_u = X_u_sub
