@@ -373,7 +373,8 @@ def main():
     if args.test_csv:
         df = loader.load_csv(args.test_csv, label_col=args.label_col)
     elif args.dataset in {"cicids2017", "kddcup99", "anoshift"}:
-        df = loader.load_dataset(args.dataset, split="test", label_col=args.label_col or "Label")
+        max_samples = 50000 if args.dataset == "anoshift" else None
+        df = loader.load_dataset(args.dataset, split="test", label_col=args.label_col or "Label", max_samples=max_samples)
     elif args.dataset == "unsw":
         df = loader.load_csv("../IDS-UNSW_NB/UNSW_NB15_testing-set.csv", label_col=args.label_col)
     else:
