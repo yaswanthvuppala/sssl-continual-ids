@@ -105,8 +105,11 @@ class SSLPretrainer:
             avg_loss = total_loss / max(1, steps)
             print(f"Epoch {epoch+1} completed. Average Loss: {avg_loss:.4f}")
             
-            with writer.as_default():
-                tf.summary.scalar('ssl_loss', avg_loss, step=epoch)
+            try:
+                with writer.as_default():
+                    tf.summary.scalar('ssl_loss', avg_loss, step=epoch)
+            except Exception:
+                pass
                 
             # Save checkpoint
             self.ckpt_manager.save()

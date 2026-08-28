@@ -341,9 +341,12 @@ class FixMatchTrainer:
                 if k in avg_metrics:
                     history[k].append(avg_metrics[k])
             
-            with writer.as_default():
-                for k, v in avg_metrics.items():
-                    tf.summary.scalar(k, v, step=epoch)
+            try:
+                with writer.as_default():
+                    for k, v in avg_metrics.items():
+                        tf.summary.scalar(k, v, step=epoch)
+            except Exception:
+                pass
                     
             ckpt_manager.save()
             
