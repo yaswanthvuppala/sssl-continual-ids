@@ -496,6 +496,10 @@ def main():
         if os.path.exists(task_prep_path):
             task_prep = FlowPreprocessor.load(task_prep_path)
             feat, lbl_raw = task_prep.transform(df, label_col=task_label_col)
+        elif task_name != "intrusion" and task_label_col in df.columns:
+            # Fallback fit on evaluation frame with task label column
+            task_prep = FlowPreprocessor()
+            feat, lbl_raw = task_prep.fit_transform(df, label_col=task_label_col)
         else:
             task_prep = preprocessor
             feat, lbl_raw = features, labels_raw

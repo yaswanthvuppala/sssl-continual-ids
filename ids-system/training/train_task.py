@@ -222,7 +222,7 @@ def main():
     parser.add_argument("--preprocessor_path", type=str, default=None,
                         help="Path to the fitted preprocessor (auto-selected per task if not set)")
     parser.add_argument("--max_labeled", type=int, default=None,
-                        help="Optional cap on absolute number of labeled training samples (e.g. 5, 10, 500)")
+                        help="Optional cap on labeled training samples")
     parser.add_argument("--label_ratio", type=float, default=None,
                         help="Fraction of training data that is labeled (e.g. 0.05 for 5%, 0.10 for 10%, 0.20 for 20%)")
     parser.add_argument("--max_gpm_batches", type=int, default=512,
