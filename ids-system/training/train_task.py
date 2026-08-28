@@ -432,6 +432,7 @@ def main():
     y_l_binary = make_task_labels(args.task, y_l, preprocessor.get_classes())
     
     # 1. Carve out a 15% validation split for early stopping and threshold tuning
+    stratify_labels = y_l_binary if len(np.unique(y_l_binary)) > 1 else None
     X_train_full, X_val, y_train_full, y_val = train_test_split(
         X_l, y_l_binary, test_size=0.15, random_state=42, stratify=stratify_labels
     )
