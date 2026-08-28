@@ -129,8 +129,6 @@ def main():
     parser.add_argument("--label_col", type=str, default="Label", help="Label column in the training CSV")
     parser.add_argument("--preprocessor_path", type=str, default=None,
                         help="Where to save the fitted preprocessor")
-    parser.add_argument("--max_samples", type=int, default=100000,
-                        help="Cap on training samples for memory efficiency and faster training (default: 100000)")
     parser.add_argument("--dataset_name", type=str, default="default",
                         help="Dataset identifier for scoping output paths")
     args = parser.parse_args()
@@ -150,7 +148,6 @@ def main():
         if not args.data_path:
             raise ValueError("--data_path is required when --dataset is used")
         df = loader.load_dataset(
-            args.dataset, split="train", label_col=args.label_col, max_samples=args.max_samples
         )
     elif args.train_csv:
         df = loader.load_csv(args.train_csv, label_col=args.label_col)
