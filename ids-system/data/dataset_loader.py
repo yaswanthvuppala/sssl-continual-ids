@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -422,7 +422,7 @@ class FlowDatasetLoader:
         return "other"
 
     def _load_anoshift(
-        self, split: str, test_size: float = 0.2, random_state: int = 42, max_samples: int = None
+        self, split: str, test_size: float = 0.2, random_state: int = 42, max_samples: Optional[int] = None
     ) -> pd.DataFrame:
         """
         Load AnoShift dataset (Kyoto 2006+ 10-year longitudinal benchmark).
@@ -438,26 +438,51 @@ class FlowDatasetLoader:
         print(f"Loading {len(files)} AnoShift {split} data file(s)...")
         frames = []
         total_loaded = 0
+
+        # Calculate per-file sample budget
+        per_file_cap = None
+        if max_samples is not None:
+            per_file_cap = max(2000, int(np.ceil(max_samples / max(1, len(files)))))
+
         for idx, filepath in enumerate(files):
             print(f"  [{idx+1}/{len(files)}] Loading {filepath.name}...", end="", flush=True)
+            frame = None
             try:
                 if filepath.suffix.lower() == ".parquet":
-                    frame = pd.read_parquet(filepath)
+                    # Fast streaming read via pyarrow to avoid reading multi-GB files into RAM
+                    try:
+                        import pyarrow.parquet as pq
+                        pq_file = pq.ParquetFile(filepath)
+                        if per_file_cap is not None and pq_file.metadata.num_rows > per_file_cap:
+                            batch_iter = pq_file.iter_batches(batch_size=per_file_cap)
+                            batch = next(batch_iter)
+                            frame = batch.to_pandas()
+                        else:
+                            frame = pd.read_parquet(filepath)
+                    except Exception:
+                        frame = pd.read_parquet(filepath)
                 else:
-                    frame = pd.read_csv(filepath, low_memory=False)
+                    if per_file_cap is not None:
+                        frame = pd.read_csv(filepath, nrows=per_file_cap, low_memory=False)
+                    else:
+                        frame = pd.read_csv(filepath, low_memory=False)
             except Exception as e:
                 print(f" ERROR: {e}")
                 continue
+
+            if frame is None or len(frame) == 0:
+                print(" (0 rows)")
+                continue
+
             frame.columns = [str(c).strip() for c in frame.columns]
             # Downcast float64 -> float32 to halve memory usage
             float_cols = frame.select_dtypes(include=['float64']).columns
             if len(float_cols) > 0:
                 frame[float_cols] = frame[float_cols].astype(np.float32)
-            # Per-file subsampling to prevent Colab RAM overflow
-            if max_samples is not None:
-                per_file_cap = max(2000, max_samples // max(1, len(files)))
-                if len(frame) > per_file_cap:
-                    frame = frame.sample(n=per_file_cap, random_state=random_state)
+
+            if per_file_cap is not None and len(frame) > per_file_cap:
+                frame = frame.sample(n=per_file_cap, random_state=random_state)
+
             print(f" ({len(frame):,} rows)")
             frames.append(frame)
             total_loaded += len(frame)
@@ -567,7 +592,7 @@ class FlowDatasetLoader:
         else:  # all, all_test
             target_years = list(range(2006, 2016))
 
-        matched_files = []
+        matched_files = {}
         for sdir in search_dirs:
             all_files = [p for p in sdir.glob("*") if p.is_file() and p.suffix.lower() in {".parquet", ".csv"}]
             for yr in target_years:
@@ -575,17 +600,24 @@ class FlowDatasetLoader:
                 for f in all_files:
                     fn = f.name.lower()
                     if yr_str in fn:
-                        if sk == "train" and f not in matched_files:
-                            matched_files.append(f)
-                        elif sk in {"test", "iid", "iid_test"} and ("valid" in fn or "test" in fn) and f not in matched_files:
-                            matched_files.append(f)
-                        elif sk in {"near", "near_test", "far", "far_test"} and f not in matched_files:
-                            matched_files.append(f)
-                        elif sk in {"all", "all_test"} and f not in matched_files:
-                            matched_files.append(f)
+                        # For training, ignore validation and test files
+                        if sk == "train":
+                            if "valid" in fn or "test" in fn:
+                                continue
+                            if f.name not in matched_files:
+                                matched_files[f.name] = f
+                        elif sk in {"test", "iid", "iid_test"}:
+                            if ("valid" in fn or "test" in fn) and f.name not in matched_files:
+                                matched_files[f.name] = f
+                        elif sk in {"near", "near_test", "far", "far_test"}:
+                            if f.name not in matched_files:
+                                matched_files[f.name] = f
+                        elif sk in {"all", "all_test"}:
+                            if f.name not in matched_files:
+                                matched_files[f.name] = f
 
         if matched_files:
-            return sorted(matched_files)
+            return sorted(list(matched_files.values()))
 
         # Broad search across search dirs for any parquet or csv matching split keyword
         for sdir in search_dirs:
@@ -593,18 +625,25 @@ class FlowDatasetLoader:
                 if f.is_file() and f.suffix.lower() in {".parquet", ".csv"}:
                     fn = f.name.lower()
                     if sk == "train" and ("train" in fn or any(str(y) in fn for y in [2006, 2007, 2008, 2009, 2010])):
-                        matched_files.append(f)
+                        if "valid" in fn or "test" in fn:
+                            continue
+                        if f.name not in matched_files:
+                            matched_files[f.name] = f
                     elif sk in {"test", "iid", "iid_test"} and ("valid" in fn or "test" in fn or "iid" in fn):
-                        matched_files.append(f)
+                        if f.name not in matched_files:
+                            matched_files[f.name] = f
                     elif sk in {"near", "near_test"} and ("near" in fn or any(str(y) in fn for y in [2011, 2012, 2013])):
-                        matched_files.append(f)
+                        if f.name not in matched_files:
+                            matched_files[f.name] = f
                     elif sk in {"far", "far_test"} and ("far" in fn or any(str(y) in fn for y in [2014, 2015])):
-                        matched_files.append(f)
+                        if f.name not in matched_files:
+                            matched_files[f.name] = f
                     elif sk in {"all", "all_test"}:
-                        matched_files.append(f)
+                        if f.name not in matched_files:
+                            matched_files[f.name] = f
 
         if matched_files:
-            return sorted(list(set(matched_files)))
+            return sorted(list(matched_files.values()))
 
         # Fallback: return any available parquet/csv data files
         for sdir in search_dirs:
