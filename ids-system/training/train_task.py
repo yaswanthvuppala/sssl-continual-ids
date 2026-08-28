@@ -248,7 +248,7 @@ def main():
     parser.add_argument("--preprocessor_path", type=str, default=None,
                         help="Path to the fitted preprocessor (auto-selected per task if not set)")
     parser.add_argument("--max_labeled", type=int, default=None,
-                        help="Optional cap on labeled training samples")
+                        help="Optional cap on absolute number of labeled training samples (e.g. 5, 10, 500)")
     parser.add_argument("--max_gpm_batches", type=int, default=512,
                         help="Maximum valid labeled batches to use for GPM SVD capture; use 0 to scan all batches")
     parser.add_argument("--dataset_name", type=str, default="default",
@@ -465,7 +465,7 @@ def main():
         X_l = X_l[:args.max_labeled]
         y_l_binary = y_l_binary[:args.max_labeled]
     
-    print(f"Dataset split summary -> Labeled: {len(X_l)} samples | Unlabeled: {len(X_u)} samples | Validation: {len(X_val)} samples")
+    print(f"Dataset split summary -> Labeled: {len(X_l):,} samples ({len(X_l)/(len(X_l)+len(X_u))*100:.1f}%) | Unlabeled: {len(X_u):,} samples | Validation: {len(X_val):,} samples")
     
     # Compute class weights (inverse frequency) to address class imbalance
     unique_classes, class_counts = np.unique(y_l_binary, return_counts=True)
