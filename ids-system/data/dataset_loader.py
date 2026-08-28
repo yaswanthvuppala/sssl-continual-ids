@@ -155,7 +155,6 @@ class FlowDatasetLoader:
         label_col: str = "Label",
         test_size: float = 0.2,
         random_state: int = 42,
-        max_samples: Optional[int] = None,
     ) -> pd.DataFrame:
         """
         Load a supported raw dataset and expose standardized labels.
@@ -179,7 +178,7 @@ class FlowDatasetLoader:
         elif dataset_key in {"cicids2017", "cic2017"}:
             df = self._load_cicids2017(split, test_size, random_state)
         elif dataset_key in {"anoshift", "kyoto", "kyoto2006", "kyoto2016"}:
-            df = self._load_anoshift(split, test_size, random_state, max_samples=max_samples)
+            df = self._load_anoshift(split, test_size, random_state)
         else:
             raise ValueError(
                 f"Unsupported dataset '{dataset}'. "
@@ -422,57 +421,37 @@ class FlowDatasetLoader:
         return "other"
 
     def _load_anoshift(
-        self, split: str = "train", test_size: float = 0.2, random_state: int = 42, max_samples: Optional[int] = None
+        self, split: str, test_size: float = 0.2, random_state: int = 42
     ) -> pd.DataFrame:
         """
-        Loads AnoShift longitudinal benchmark splits (Parquet / CSV).
-          - 'train': In-Distribution (2006-2010 flow training files)
+        Load AnoShift dataset (Kyoto 2006+ 10-year longitudinal benchmark).
+
+        Splits:
+          - 'train': In-Distribution (2006-2010 normal flow training files)
           - 'test' / 'iid' / 'iid_test': In-Distribution (2006-2010 valid/test files)
           - 'near' / 'near_test': Near-Distribution (2011-2013 test files)
           - 'far' / 'far_test': Far-Distribution (2014-2015 test files)
           - 'all' / 'all_test': All test splits combined (2006-2015)
         """
         files = self._resolve_anoshift_files(split)
-        print(f"Loading {len(files)} unique AnoShift {split} data file(s)...")
+        print(f"Loading {len(files)} AnoShift {split} data file(s)...")
         frames = []
-        total_loaded = 0
-        for idx, filepath in enumerate(files):
-            print(f"  [{idx+1}/{len(files)}] Loading {filepath.name}...", end="", flush=True)
+        for filepath in files:
             try:
                 if filepath.suffix.lower() == ".parquet":
                     frame = pd.read_parquet(filepath)
                 else:
                     frame = pd.read_csv(filepath, low_memory=False)
             except Exception as e:
-                print(f"\n[WARN] Error reading {filepath}: {e}")
+                print(f"[WARN] Error reading {filepath}: {e}")
                 continue
             frame.columns = [str(c).strip() for c in frame.columns]
-            # Downcast float64 to float32 to reduce memory footprint by 50%
-            float_cols = frame.select_dtypes(include=['float64']).columns
-            if len(float_cols) > 0:
-                frame[float_cols] = frame[float_cols].astype(np.float32)
-
-            # Fast subsampling if max_samples is specified to prevent Colab RAM overflow
-            if max_samples is not None:
-                per_file_target = max(2000, max_samples // max(1, len(files)))
-                if len(frame) > per_file_target:
-                    frame = frame.sample(n=per_file_target, random_state=random_state)
-
-            print(f" ({len(frame):,} rows)")
             frames.append(frame)
-            total_loaded += len(frame)
-            if max_samples is not None and total_loaded >= max_samples * 1.2:
-                print(f"[INFO] Reached requested sample budget ({total_loaded:,} flows).")
-                break
 
         if not frames:
             raise FileNotFoundError(f"No AnoShift files could be loaded for split '{split}' from {self.data_path}")
 
         df = pd.concat(frames, ignore_index=True)
-
-        # Final cap to exact max_samples if set
-        if max_samples is not None and len(df) > max_samples:
-            df = df.sample(n=max_samples, random_state=random_state).reset_index(drop=True)
 
         # Identify label column (Kyoto standard is '18' or 'label' / 'Label')
         label_col = None
@@ -568,7 +547,7 @@ class FlowDatasetLoader:
         else:  # all, all_test
             target_years = list(range(2006, 2016))
 
-        matched_files = {}
+        matched_files = []
         for sdir in search_dirs:
             all_files = [p for p in sdir.glob("*") if p.is_file() and p.suffix.lower() in {".parquet", ".csv"}]
             for yr in target_years:
@@ -576,17 +555,17 @@ class FlowDatasetLoader:
                 for f in all_files:
                     fn = f.name.lower()
                     if yr_str in fn:
-                        if sk == "train" and f.name not in matched_files:
-                            matched_files[f.name] = f
-                        elif sk in {"test", "iid", "iid_test"} and ("valid" in fn or "test" in fn) and f.name not in matched_files:
-                            matched_files[f.name] = f
-                        elif sk in {"near", "near_test", "far", "far_test"} and f.name not in matched_files:
-                            matched_files[f.name] = f
-                        elif sk in {"all", "all_test"} and f.name not in matched_files:
-                            matched_files[f.name] = f
+                        if sk == "train" and f not in matched_files:
+                            matched_files.append(f)
+                        elif sk in {"test", "iid", "iid_test"} and ("valid" in fn or "test" in fn) and f not in matched_files:
+                            matched_files.append(f)
+                        elif sk in {"near", "near_test", "far", "far_test"} and f not in matched_files:
+                            matched_files.append(f)
+                        elif sk in {"all", "all_test"} and f not in matched_files:
+                            matched_files.append(f)
 
         if matched_files:
-            return sorted(list(matched_files.values()))
+            return sorted(matched_files)
 
         # Broad search across search dirs for any parquet or csv matching split keyword
         for sdir in search_dirs:
@@ -594,23 +573,18 @@ class FlowDatasetLoader:
                 if f.is_file() and f.suffix.lower() in {".parquet", ".csv"}:
                     fn = f.name.lower()
                     if sk == "train" and ("train" in fn or any(str(y) in fn for y in [2006, 2007, 2008, 2009, 2010])):
-                        if f.name not in matched_files:
-                            matched_files[f.name] = f
+                        matched_files.append(f)
                     elif sk in {"test", "iid", "iid_test"} and ("valid" in fn or "test" in fn or "iid" in fn):
-                        if f.name not in matched_files:
-                            matched_files[f.name] = f
+                        matched_files.append(f)
                     elif sk in {"near", "near_test"} and ("near" in fn or any(str(y) in fn for y in [2011, 2012, 2013])):
-                        if f.name not in matched_files:
-                            matched_files[f.name] = f
+                        matched_files.append(f)
                     elif sk in {"far", "far_test"} and ("far" in fn or any(str(y) in fn for y in [2014, 2015])):
-                        if f.name not in matched_files:
-                            matched_files[f.name] = f
+                        matched_files.append(f)
                     elif sk in {"all", "all_test"}:
-                        if f.name not in matched_files:
-                            matched_files[f.name] = f
+                        matched_files.append(f)
 
         if matched_files:
-            return sorted(list(matched_files.values()))
+            return sorted(list(set(matched_files)))
 
         # Fallback: return any available parquet/csv data files
         for sdir in search_dirs:
@@ -645,7 +619,6 @@ class FlowDatasetLoader:
 
         raise FileNotFoundError(
             f"No AnoShift data files (.parquet or .csv) found in '{base}' for split '{split}'.\n"
-            f"Searched directories: {[str(d) for d in search_dirs]}"
             f"Searched directories: {[str(d) for d in search_dirs]}\n"
             "Run 'python data/download_anoshift.py --save_dir ./data/anoshift' first."
         )
