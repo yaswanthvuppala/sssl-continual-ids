@@ -54,16 +54,17 @@ def load_heads(encoder_out_dim: int, ckpt_base: str, allow_demo: bool) -> dict:
         ckpt = (
             tf.train.latest_checkpoint(f"{ckpt_base}/{task_dir}/best")
             or tf.train.latest_checkpoint(f"{ckpt_base}/{task_dir}")
-            or tf.train.latest_checkpoint(f"./checkpoints/{task_dir}/best")
-            or tf.train.latest_checkpoint(f"./checkpoints/{task_dir}")
         )
-        if not ckpt:
-            if not allow_demo:
-                raise FileNotFoundError(f"No checkpoint for {name}. Train the {task_dir} head first.")
-            print(f"  [WARN] No checkpoint for {name}; using random weights (demo mode)")
+        if ckpt:
+            try:
+                tf.train.Checkpoint(head=head).restore(ckpt).expect_partial()
+                print(f"  Loaded checkpoint for {name} from {ckpt}")
+            except Exception as e:
+                print(f"  [WARN] Incompatible checkpoint at {ckpt} ({e}); using random weights.")
         else:
-            tf.train.Checkpoint(head=head).restore(ckpt).expect_partial()
-            print(f"  Loaded checkpoint for {name}")
+            if not allow_demo:
+                raise FileNotFoundError(f"No checkpoint for {name} found in '{ckpt_base}'. Train the {task_dir} head first.")
+            print(f"  [INFO] No checkpoint for {name} in '{ckpt_base}'; using uninitialized weights (0% zero-shot / demo mode).")
         heads[name] = head
     return heads
 
