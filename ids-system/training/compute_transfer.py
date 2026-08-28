@@ -719,7 +719,6 @@ def main():
     parser.add_argument(
         "--dataset_name",
         type=str,
-        choices=["kddcup99", "cicids2017", "unsw"],
         default=None,
         help="Dataset to compute transfer metrics for",
     )
@@ -738,7 +737,7 @@ def main():
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Run for all three datasets",
+        help="Run for all datasets",
     )
     parser.add_argument(
         "--unfrozen",
@@ -751,7 +750,6 @@ def main():
         parser.error("Either --dataset_name or --all is required")
 
     datasets = (
-        ["kddcup99", "cicids2017", "unsw"] if args.all else [args.dataset_name]
     )
 
     all_results = {}

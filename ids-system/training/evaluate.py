@@ -275,8 +275,11 @@ def main():
     parser.add_argument("--task", type=str, default="all", choices=["all", "intrusion", "dos", "port_scan"],
                         help="Task head to evaluate")
     parser.add_argument("--test_csv", type=str, default=None, help="Testing CSV")
-    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw"],
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw", "anoshift"],
                         default=None, help="Load a supported raw dataset")
+    parser.add_argument("--split", type=str, default="test",
+                        choices=["test", "iid", "near", "far", "all"],
+                        help="Temporal domain split to evaluate (for AnoShift: iid, near, far, all)")
     parser.add_argument("--data_path", type=str, default=None,
                         help="Dataset directory or raw data file")
     parser.add_argument("--label_col", type=str, default="Label", help="Label column in the testing CSV")
@@ -435,7 +438,7 @@ def main():
                 "Run SSL/task training on the training split first."
             )
         df = loader.load_dataset(
-            args.dataset, split="test", label_col=args.label_col
+            args.dataset, split=args.split or "test", label_col=args.label_col
         )
         preprocessor = FlowPreprocessor.load(args.preprocessor_path)
         features, labels_raw = preprocessor.transform(

@@ -93,7 +93,7 @@ def main():
     parser.add_argument("--mode", type=str, required=True,
                         choices=[
                             "ssl", "task", "evaluate", "predict", "benchmark",
-                            "pipeline", "unsw", "kddcup99", "cicids2017",
+                            "pipeline", "unsw", "kddcup99", "cicids2017", "anoshift",
                             "visualize", "train_anomaly", "zeroday", "zero_day",
                         ],
                         help="Operating mode")
@@ -105,7 +105,7 @@ def main():
     parser.add_argument("--train_csv", type=str, default=None, help="Training CSV path")
     parser.add_argument("--test_csv", type=str, default=None, help="Testing CSV path")
     parser.add_argument("--label_col", type=str, default=None, help="Dataset label column")
-    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw"],
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw", "anoshift"],
                         default=None, help="Supported raw dataset for stage-specific modes")
     parser.add_argument("--data_path", type=str, default=None,
                         help="Dataset directory or raw file")
@@ -160,6 +160,7 @@ def main():
             "cicids2017": "../CICIDS2017",
             "kddcup99": "../KDDCUP99",
             "unsw": "../IDS-UNSW_NB",
+            "anoshift": "./data/anoshift",
         }.get(args.dataset)
         add_arg(cmd, "data_path", data_path)
         add_arg(cmd, "train_csv", args.train_csv)
@@ -176,6 +177,7 @@ def main():
             "cicids2017": "../CICIDS2017",
             "kddcup99": "../KDDCUP99",
             "unsw": "../IDS-UNSW_NB",
+            "anoshift": "./data/anoshift",
         }.get(args.dataset)
         add_arg(cmd, "data_path", data_path)
         add_arg(cmd, "test_csv", args.test_csv)
@@ -221,11 +223,12 @@ def main():
             dataset_name=args.dataset_name or "unsw",
         )
 
-    elif args.mode in {"kddcup99", "cicids2017"}:
+    elif args.mode in {"kddcup99", "cicids2017", "anoshift"}:
         dataset = args.mode
         data_path = args.data_path or {
             "kddcup99": "../KDDCUP99",
             "cicids2017": "../CICIDS2017",
+            "anoshift": "./data/anoshift",
         }[dataset]
         task = args.task or "intrusion"
         label_col = args.label_col or ("Label" if task == "intrusion" else "AttackCategory")

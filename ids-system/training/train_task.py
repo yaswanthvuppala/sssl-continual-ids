@@ -170,21 +170,26 @@ def build_task_head(task: str, embed_dim: int) -> tf.keras.Model:
 
 
 def make_task_labels(task: str, labels: np.ndarray, classes: np.ndarray) -> np.ndarray:
+    normalized_classes = [str(c).strip().lower() for c in classes]
     if task == "intrusion":
-        if len(classes) != 2:
-            raise ValueError(f"Intrusion task expects a binary label column, got classes: {classes.tolist()}")
-        return labels.astype(np.int32)
+        if len(classes) == 1:
+            return np.zeros_like(labels, dtype=np.int32)
+        if len(classes) == 2 and set(normalized_classes).issubset({"normal", "attack", "0", "1"}):
+            target_indices = [i for i, c in enumerate(normalized_classes) if c in {"attack", "1"}]
+            return np.isin(labels, target_indices).astype(np.int32)
+        # Multi-class: anything not normal is attack
+        target_indices = [i for i, c in enumerate(normalized_classes) if c not in {"normal", "benign", "0", "0.0"}]
+        return np.isin(labels, target_indices).astype(np.int32)
 
     target_names = {
-        "dos": ["dos"],
+        "dos": ["dos", "ddos", "known_attack"],
         "port_scan": ["portscan", "port scan", "port_scan", "probe", "reconnaissance"],
     }[task]
-    normalized_classes = [str(c).strip().lower() for c in classes]
     target_indices = [i for i, c in enumerate(normalized_classes) if c in target_names]
     if not target_indices:
         raise ValueError(
             f"Could not find task label for '{task}' in classes: {classes.tolist()}. "
-            "Use --task intrusion with UNSW's binary 'label' column."
+            "Use --task intrusion with dataset's 'Label' column."
         )
     return np.isin(labels, target_indices).astype(np.int32)
 
@@ -195,7 +200,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32, help="Labeled batch size")
     parser.add_argument("--unlabeled_batch_size", type=int, default=128, help="Unlabeled batch size")
     parser.add_argument("--train_csv", type=str, default=None, help="Training CSV")
-    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw"],
+    parser.add_argument("--dataset", type=str, choices=["cicids2017", "kddcup99", "unsw", "anoshift"],
                         default=None, help="Load a supported raw dataset")
     parser.add_argument("--data_path", type=str, default=None,
                         help="Dataset directory or raw data file")
@@ -283,26 +288,25 @@ def main():
             refit_needed = (args.task != "intrusion" and set(preprocessor.get_classes()).issubset({"attack", "normal"}))
             try:
                 if refit_needed:
-                    print(f"[WARN] Preprocessor at {args.preprocessor_path} has binary classes {preprocessor.get_classes()}, refitting for task '{args.task}' on '{args.label_col}'...")
+                    print(f"[WARN] Preprocessor at {args.preprocessor_path} has binary classes {preprocessor.get_classes()}, refitting for task '{args.task}' on '{target_label_col}'...")
                     raise ValueError("Refitting preprocessor for task-specific attack categories.")
                 X_l, y_l = preprocessor.transform(
-                    df_labeled, label_col=args.label_col
+                    df_labeled, label_col=target_label_col
                 )
             except (ValueError, KeyError) as e:
                 print(
                     f"[WARN] Saved preprocessor incompatible with label column "
-                    f"'{args.label_col}': {e}"
+                    f"'{target_label_col}': {e}"
                 )
                 print("[WARN] Refitting preprocessor on current dataset...")
                 preprocessor = FlowPreprocessor()
                 X_l, y_l = preprocessor.fit_transform(
-                    df_labeled, label_col=args.label_col
+                    df_labeled, label_col=target_label_col
                 )
                 preprocessor.save(args.preprocessor_path)
         else:
             preprocessor = FlowPreprocessor()
             X_l, y_l = preprocessor.fit_transform(
-                df_labeled, label_col=args.label_col
             )
             preprocessor.save(args.preprocessor_path)
             print(f"Fitted preprocessor saved to {args.preprocessor_path}")
