@@ -749,8 +749,7 @@ def main():
     if not args.all and not args.dataset_name:
         parser.error("Either --dataset_name or --all is required")
 
-    datasets = (
-    )
+    datasets = list(DATASET_CONFIG.keys()) if args.all else [args.dataset_name]
 
     all_results = {}
     for ds in datasets:
