@@ -508,6 +508,8 @@ def main():
         ckpt = (
             tf.train.latest_checkpoint(f"{ckpt_base}/{task_name}/best")
             or tf.train.latest_checkpoint(f"{ckpt_base}/{task_name}")
+            or tf.train.latest_checkpoint(f"./checkpoints/{task_name}/best")
+            or tf.train.latest_checkpoint(f"./checkpoints/{task_name}")
         )
         if not ckpt and allow_demo:
             ckpt = (
@@ -516,6 +518,7 @@ def main():
             )
 
         if ckpt:
+            tf.train.Checkpoint(head=head).restore(ckpt).expect_partial()
             try:
                 tf.train.Checkpoint(head=head).restore(ckpt).expect_partial()
             except Exception as e:
@@ -523,6 +526,7 @@ def main():
                 continue
         else:
             if not allow_demo:
+                raise FileNotFoundError(f"No checkpoint for {task_name}. Train the task head first.")
                 print(f"[WARN] No checkpoint for '{task_name}' found in '{ckpt_base}'. Skipping.")
                 continue
             print(f"[WARN] No checkpoint for {task_name}; using random weights.")
