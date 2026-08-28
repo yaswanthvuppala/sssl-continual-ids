@@ -6,7 +6,7 @@
     List of datasets: "anoshift", "cicids2017", "kddcup99", "unsw" (default: "anoshift")
 
 .PARAMETER label_ratios
-    List of label proportions: 0.0, 0.05, 0.10 (default: 0.0, 0.05, 0.10)
+    List of label proportions: "0", "0.05", "0.10" (default: "0", "0.05", "0.10")
 
 .PARAMETER quick
     Run in quick mode with small epoch count for testing (default: false)
@@ -14,7 +14,7 @@
 
 param (
     [string[]]$datasets = @("anoshift"),
-    [double[]]$label_ratios = @(0.0, 0.05, 0.10),
+    [string[]]$label_ratios = @("0", "0.05", "0.10"),
     [switch]$quick
 )
 
@@ -34,15 +34,16 @@ if ($null -eq $env:VIRTUAL_ENV) {
     }
 }
 
-$quickFlag = if ($quick) { "--quick" } else { "" }
-$dsArgs = $datasets -join " "
-$ratioArgs = $label_ratios -join " "
+$pyArgs = @("run_experiments.py", "--datasets") + $datasets + @("--label_ratios") + $label_ratios
+if ($quick) {
+    $pyArgs += "--quick"
+}
 
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host " STARTING MULTI-DATASET FEW-LABEL SSSL-IDS BENCHMARK RUNNER" -ForegroundColor Green
-Write-Host " Datasets:     $dsArgs" -ForegroundColor Cyan
-Write-Host " Label Ratios: $ratioArgs" -ForegroundColor Cyan
+Write-Host " Datasets:     $($datasets -join ' ')" -ForegroundColor Cyan
+Write-Host " Label Ratios: $($label_ratios -join ' ')" -ForegroundColor Cyan
 Write-Host " Quick Mode:   $quick" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Green
 
-python run_experiments.py --datasets $datasets --label_ratios $label_ratios $quickFlag
+python @pyArgs
