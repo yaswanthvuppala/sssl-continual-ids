@@ -223,6 +223,8 @@ def main():
                         help="Path to the fitted preprocessor (auto-selected per task if not set)")
     parser.add_argument("--max_labeled", type=int, default=None,
                         help="Optional cap on labeled training samples")
+    parser.add_argument("--label_ratio", type=float, default=None,
+                        help="Fraction of training data that is labeled (e.g. 0.05 for 5%, 0.10 for 10%)")
     parser.add_argument("--max_gpm_batches", type=int, default=512,
                         help="Maximum valid labeled batches to use for GPM SVD capture; use 0 to scan all batches")
     parser.add_argument("--dataset_name", type=str, default="default",
@@ -386,11 +388,18 @@ def main():
     np.savez(val_save_path, val_x=X_val, val_y=y_val)
     print(f"Validation data saved to {val_save_path} ({len(X_val)} samples)")
     
-    # 2. Split train set into labeled (20%) and unlabeled (80%) subsets to prevent X_u = X_l feedback leakage
+    # 2. Split train set into labeled (e.g. 5%, 10%, 20%) and unlabeled subsets
     stratify_train = y_train_full if len(np.unique(y_train_full)) > 1 else None
-    X_l_sub, X_u_sub, y_l_binary, _ = train_test_split(
-        X_train_full, y_train_full, test_size=0.80, random_state=42, stratify=stratify_train
-    )
+    if args.label_ratio is not None:
+        labeled_ratio = max(0.001, min(0.99, float(args.label_ratio)))
+        unlabeled_size = 1.0 - labeled_ratio
+        X_l_sub, X_u_sub, y_l_binary, _ = train_test_split(
+            X_train_full, y_train_full, test_size=unlabeled_size, random_state=42, stratify=stratify_train
+        )
+    else:
+        X_l_sub, X_u_sub, y_l_binary, _ = train_test_split(
+            X_train_full, y_train_full, test_size=0.80, random_state=42, stratify=stratify_train
+        )
     X_l = X_l_sub
     X_u = X_u_sub
     
@@ -398,7 +407,7 @@ def main():
         X_l = X_l[:args.max_labeled]
         y_l_binary = y_l_binary[:args.max_labeled]
     
-    print(f"Dataset split summary -> Labeled: {len(X_l)} samples | Unlabeled: {len(X_u)} samples | Validation: {len(X_val)} samples")
+    print(f"Dataset split summary -> Labeled: {len(X_l):,} samples ({len(X_l)/(len(X_l)+len(X_u))*100:.1f}%) | Unlabeled: {len(X_u):,} samples | Validation: {len(X_val):,} samples")
     
     # Compute class weights (inverse frequency) to address class imbalance
     unique_classes, class_counts = np.unique(y_l_binary, return_counts=True)
