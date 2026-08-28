@@ -213,10 +213,10 @@ def make_task_labels(task: str, labels: np.ndarray, classes: np.ndarray) -> np.n
     }[task]
     target_indices = [i for i, c in enumerate(normalized_classes) if c in target_names]
     if not target_indices:
-        target_indices = [i for i, c in enumerate(normalized_classes) if c not in {"normal", "benign", "0", "0.0"}]
-        if not target_indices:
-            print(f"[WARN] No attack samples found for task '{task}' in classes: {classes.tolist()}. Using binary zero vector.")
-            return np.zeros_like(labels, dtype=np.int32)
+        raise ValueError(
+            f"Could not find task label for '{task}' in classes: {classes.tolist()}. "
+            "Use --task intrusion with dataset's 'Label' column."
+        )
     return np.isin(labels, target_indices).astype(np.int32)
 
 def main():
@@ -415,7 +415,6 @@ def main():
     y_l_binary = make_task_labels(args.task, y_l, preprocessor.get_classes())
     
     # 1. Carve out a 15% validation split for early stopping and threshold tuning
-    stratify_labels = y_l_binary if len(np.unique(y_l_binary)) > 1 else None
     X_train_full, X_val, y_train_full, y_val = train_test_split(
         X_l, y_l_binary, test_size=0.15, random_state=42, stratify=stratify_labels
     )
