@@ -461,6 +461,7 @@ def main():
             )
         max_samples = 50000 if args.dataset == "anoshift" else None
         df = loader.load_dataset(
+            args.dataset, split=args.split or "test", label_col=args.label_col
             args.dataset, split=args.split or "test", label_col=args.label_col, max_samples=max_samples
         )
         preprocessor = FlowPreprocessor.load(args.preprocessor_path)
