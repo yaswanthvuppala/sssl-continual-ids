@@ -84,14 +84,11 @@ def load_keras3_weights_manually(model, zip_path: str):
                     if not is_default:
                         custom_names_in_h5[saved_name] = h5_layer
                     else:
-                        if h5_layer['count'] == 2:  # Dense
-                        # Dense has kernel (2D) and bias (1D)
                         if h5_layer['count'] == 2 and h5_layer['weights'][0].ndim == 2:
                             unnamed_dense_in_h5.append(h5_layer)
-                        # LayerNormalization has gamma (1D) and beta (1D)
                         elif h5_layer['count'] == 2 and h5_layer['weights'][0].ndim == 1:
                             unnamed_ln_in_h5.append(h5_layer)
-                        elif h5_layer['count'] == 4:  # BatchNormalization
+                        elif h5_layer['count'] == 4:
                             unnamed_bn_in_h5.append(h5_layer)
                 
                 keras2_dense_unnamed = []
@@ -111,7 +108,6 @@ def load_keras3_weights_manually(model, zip_path: str):
                         else:
                             print(f"  [ERROR] Custom layer '{name}' not found in weights file.")
                     else:
-                        if len(layer.weights) == 2:
                         if len(layer.weights) == 2 and len(layer.weights[0].shape) == 2:
                             keras2_dense_unnamed.append(layer)
                         elif len(layer.weights) == 2 and len(layer.weights[0].shape) == 1:
@@ -364,23 +360,19 @@ def main():
             refit_needed = (args.task != "intrusion" and set(preprocessor.get_classes()).issubset({"attack", "normal"}))
             try:
                 if refit_needed:
-                    print(f"[WARN] Preprocessor at {args.preprocessor_path} has binary classes {preprocessor.get_classes()}, refitting for task '{args.task}' on '{target_label_col}'...")
                     print(f"[WARN] Preprocessor at {args.preprocessor_path} has binary classes {preprocessor.get_classes()}, refitting for task '{args.task}' on '{args.label_col}'...")
                     raise ValueError("Refitting preprocessor for task-specific attack categories.")
                 X_l, y_l = preprocessor.transform(
-                    df_labeled, label_col=target_label_col
                     df_labeled, label_col=args.label_col
                 )
             except (ValueError, KeyError) as e:
                 print(
                     f"[WARN] Saved preprocessor incompatible with label column "
-                    f"'{target_label_col}': {e}"
                     f"'{args.label_col}': {e}"
                 )
                 print("[WARN] Refitting preprocessor on current dataset...")
                 preprocessor = FlowPreprocessor()
                 X_l, y_l = preprocessor.fit_transform(
-                    df_labeled, label_col=target_label_col
                     df_labeled, label_col=args.label_col
                 )
                 preprocessor.save(args.preprocessor_path)

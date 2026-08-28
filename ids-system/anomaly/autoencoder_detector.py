@@ -184,14 +184,12 @@ class AutoencoderDetector:
                             custom_names_in_h5 = {}
                             unnamed_dense_in_h5 = []
                             unnamed_bn_in_h5 = []
-                            unnamed_ln_in_h5 = []
                             
                             for h5_layer in h5_layers:
                                 saved_name = h5_layer['saved_name']
                                 is_default = (
                                     saved_name.startswith("dense") or 
                                     saved_name.startswith("batch_normalization") or
-                                    saved_name.startswith("layer_normalization") or
                                     saved_name.startswith("dropout") or
                                     saved_name.startswith("input")
                                 )
@@ -199,18 +197,12 @@ class AutoencoderDetector:
                                     custom_names_in_h5[saved_name] = h5_layer
                                 else:
                                     if h5_layer['count'] == 2:  # Dense
-                                    # Dense has kernel (2D) and bias (1D)
-                                    if h5_layer['count'] == 2 and h5_layer['weights'][0].ndim == 2:
                                         unnamed_dense_in_h5.append(h5_layer)
-                                    # LayerNormalization has gamma (1D) and beta (1D)
-                                    elif h5_layer['count'] == 2 and h5_layer['weights'][0].ndim == 1:
-                                        unnamed_ln_in_h5.append(h5_layer)
                                     elif h5_layer['count'] == 4:  # BatchNormalization
                                         unnamed_bn_in_h5.append(h5_layer)
                             
                             keras2_dense_unnamed = []
                             keras2_bn_unnamed = []
-                            keras2_ln_unnamed = []
                             
                             for layer in self.model.layers:
                                 if not layer.weights:
@@ -226,10 +218,7 @@ class AutoencoderDetector:
                                         print(f"  [ERROR] Custom layer '{name}' not found in weights file.")
                                 else:
                                     if len(layer.weights) == 2:
-                                    if len(layer.weights) == 2 and len(layer.weights[0].shape) == 2:
                                         keras2_dense_unnamed.append(layer)
-                                    elif len(layer.weights) == 2 and len(layer.weights[0].shape) == 1:
-                                        keras2_ln_unnamed.append(layer)
                                     elif len(layer.weights) == 4:
                                         keras2_bn_unnamed.append(layer)
                             
@@ -240,13 +229,6 @@ class AutoencoderDetector:
                                     layer.set_weights(h5_layer['weights'])
                                     print(f"  Matched unnamed Dense layer #{i} '{layer.name}' -> H5 group '{h5_layer['grp_name']}'")
                                     
-                            # Match unnamed LN layers by order
-                            for i, layer in enumerate(keras2_ln_unnamed):
-                                if i < len(unnamed_ln_in_h5):
-                                    h5_layer = unnamed_ln_in_h5[i]
-                                    layer.set_weights(h5_layer['weights'])
-                                    print(f"  Matched unnamed LayerNorm layer #{i} '{layer.name}' -> H5 group '{h5_layer['grp_name']}'")
-
                             # Match unnamed BN layers by order
                             for i, layer in enumerate(keras2_bn_unnamed):
                                 if i < len(unnamed_bn_in_h5):
