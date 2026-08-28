@@ -341,7 +341,13 @@ class FlowDatasetLoader:
         if not base.exists():
             raise FileNotFoundError(f"CICIDS2017 path not found: {base}")
 
-        csv_files = sorted(path for path in base.rglob("*.csv") if path.is_file())
+        csv_files = sorted(
+            path for path in base.rglob("*.csv")
+            if path.is_file() and not any(
+                (part.startswith(".") and part not in {".", ".."}) or part in {"venv", ".venv", "__pycache__", "site-packages"}
+                for part in path.parts
+            )
+        )
         if not csv_files:
             raise FileNotFoundError(f"No CICIDS2017 CSV files found under: {base}")
         return csv_files

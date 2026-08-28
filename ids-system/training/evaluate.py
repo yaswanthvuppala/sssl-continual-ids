@@ -471,7 +471,23 @@ def main():
     task_names = ["intrusion", "dos", "port_scan"] if args.task == "all" else [args.task]
     for task_name in task_names:
         # Load task-specific preprocessor and label column if available
-        task_label_col = args.label_col if (args.label_col and args.task != "all") else ("Label" if task_name == "intrusion" else "AttackCategory")
+        if args.label_col and args.task != "all":
+            task_label_col = args.label_col
+        elif task_name == "intrusion":
+            task_label_col = args.label_col or "Label"
+        else:
+            # Auto-detect attack category column name (varies by dataset)
+            attack_cat_candidates = ["AttackCategory", "attack_cat", "Attack_cat", "attack_category"]
+            task_label_col = None
+            for candidate in attack_cat_candidates:
+                if candidate in df.columns:
+                    task_label_col = candidate
+                    break
+            if task_label_col is None:
+                raise ValueError(
+                    f"Could not find attack category column for task '{task_name}'. "
+                    f"Tried: {attack_cat_candidates}. Available columns: {list(df.columns)}"
+                )
         task_prep_path = f"{ckpt_base}/preprocessor.pkl" if task_name == "intrusion" else f"{ckpt_base}/preprocessor_{task_name}.pkl"
         if os.path.exists(task_prep_path):
             task_prep = FlowPreprocessor.load(task_prep_path)
