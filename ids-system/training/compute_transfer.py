@@ -70,6 +70,16 @@ TASK_DISPLAY_NAMES = {
 }
 
 DATASET_CONFIG = {
+    "anoshift": {
+        "type": "dataset",
+        "dataset": "anoshift",
+        "data_path": "./data/anoshift",
+        "label_cols": {
+            "intrusion": "Label",
+            "dos": "AttackCategory",
+            "port_scan": "AttackCategory",
+        },
+    },
     "kddcup99": {
         "type": "dataset",
         "dataset": "kddcup99",
@@ -140,10 +150,22 @@ def load_test_dataframe(dataset_name: str, data_path: str = None, test_csv: str 
     """Load test set dataframe for a given dataset with auto-fallbacks and memory-safe sizing."""
     from data.dataset_loader import FlowDatasetLoader
     config = DATASET_CONFIG[dataset_name]
+    config = DATASET_CONFIG.get(dataset_name, {
+        "type": "dataset",
+        "dataset": dataset_name,
+        "data_path": data_path or f"./data/{dataset_name}",
+        "label_cols": {
+            "intrusion": "Label",
+            "dos": "AttackCategory",
+            "port_scan": "AttackCategory",
+        }
+    })
     if config["type"] == "dataset":
         dp = data_path or config["data_path"]
         if not os.path.exists(dp):
             for candidate in [
+                f"./data/{dataset_name}",
+                f"./data/{config['dataset']}",
                 f"/content/{dataset_name.upper()}",
                 f"/content/{config['dataset'].upper()}",
                 f"/content/{dataset_name}",
@@ -157,6 +179,9 @@ def load_test_dataframe(dataset_name: str, data_path: str = None, test_csv: str 
                     break
         loader = FlowDatasetLoader(data_path=dp)
         df = loader.load_dataset(config["dataset"], split="test")
+        max_samples = 50000 if config["dataset"] == "anoshift" else None
+        split = "iid" if config["dataset"] == "anoshift" else "test"
+        df = loader.load_dataset(config["dataset"], split=split, max_samples=max_samples)
         if len(df) > 50000:
             print(f"  [INFO] Test set has {len(df):,} samples. Subsampling to 50,000 for evaluation speed and memory efficiency.")
             df = df.sample(n=50000, random_state=42).reset_index(drop=True)
@@ -751,6 +776,7 @@ def main():
 
     datasets = (
     )
+    datasets = list(DATASET_CONFIG.keys()) if args.all else [args.dataset_name]
 
     all_results = {}
     for ds in datasets:
