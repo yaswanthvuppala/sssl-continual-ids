@@ -108,12 +108,9 @@ class MixMatchTrainer:
             avg_metrics = {k: v / max(1, steps) for k, v in metrics.items()}
             print(f"Epoch {epoch+1} summary: {avg_metrics}")
 
-            try:
-                with writer.as_default():
-                    for k, v in avg_metrics.items():
-                        tf.summary.scalar(k, v, step=epoch)
-            except Exception:
-                pass
+            with writer.as_default():
+                for k, v in avg_metrics.items():
+                    tf.summary.scalar(k, v, step=epoch)
 
         print(f"MixMatch task {task_name} complete.")
         return avg_metrics
