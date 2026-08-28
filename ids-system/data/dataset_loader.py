@@ -423,7 +423,6 @@ class FlowDatasetLoader:
         return "other"
 
     def _load_anoshift(
-        self, split: str, test_size: float = 0.2, random_state: int = 42
         self, split: str, test_size: float = 0.2, random_state: int = 42, max_samples: int = None
     ) -> pd.DataFrame:
         """
@@ -439,7 +438,6 @@ class FlowDatasetLoader:
         files = self._resolve_anoshift_files(split)
         print(f"Loading {len(files)} AnoShift {split} data file(s)...")
         frames = []
-        for filepath in files:
         total_loaded = 0
         for idx, filepath in enumerate(files):
             print(f"  [{idx+1}/{len(files)}] Loading {filepath.name}...", end="", flush=True)
@@ -449,7 +447,6 @@ class FlowDatasetLoader:
                 else:
                     frame = pd.read_csv(filepath, low_memory=False)
             except Exception as e:
-                print(f"[WARN] Error reading {filepath}: {e}")
                 print(f" ERROR: {e}")
                 continue
             frame.columns = [str(c).strip() for c in frame.columns]
