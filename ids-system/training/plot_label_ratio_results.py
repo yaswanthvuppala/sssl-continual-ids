@@ -185,7 +185,7 @@ def generate_latex_table(results, save_path):
     # Header row
     header = r"Dataset & Task"
     for r in ratios:
-        header += f" & \\multicolumn{{2}}{{c|}}{{{r}\%}}"
+        header += f" & \\multicolumn{{2}}{{c|}}{{{r}\\%}}"
     header += r" \\"
     lines.append(header)
 
